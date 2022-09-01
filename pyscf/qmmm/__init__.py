@@ -19,3 +19,4 @@
 from pyscf.qmmm import itrf
 from pyscf.qmmm.itrf import *
 from pyscf.qmmm.mm_mole import Mole, create_mm_mol
+from pyscf.qmmm.qmmmpol import *
