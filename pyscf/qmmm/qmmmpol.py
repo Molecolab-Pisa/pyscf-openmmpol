@@ -306,7 +306,7 @@ def qmmmpol_for_scf(scf_method):
 
                     for d in dm1:
                         current_ef = self.ef_at_pol_sites(d, exclude_nuclei=True)
-                        ommp.set_external_field(current_ef, 'inversion')
+                        ommp.set_external_field(current_ef, 'inversion', exclude_mm = True)
 
                         if not ommp.ff_is_amoeba():
                             current_ipds = self.get_mmpol_induced_dipoles()
