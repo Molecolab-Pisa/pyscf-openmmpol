@@ -311,9 +311,8 @@ def qmmmpol_for_scf(scf_method):
                         if not ommp.ff_is_amoeba():
                             current_ipds = self.get_mmpol_induced_dipoles()
                         else:
-                            current_ipds_d, current_ipds_p = \
+                            current_ipds, empty = \
                                     self.get_mmpol_induced_dipoles()
-                            current_ipds = (current_ipds_d+current_ipds_p) / 2
 
                         vd = -numpy.einsum('inmj,ji->nm',
                                            self.ef_integrals_at_pol,
