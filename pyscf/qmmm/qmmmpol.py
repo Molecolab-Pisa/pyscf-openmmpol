@@ -58,6 +58,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         def __init__(self, scf_method, ommp_obj):
             self.__dict__.update(scf_method.__dict__)
             self.ommp_obj = ommp_obj
+            self._keys.update(['ommp_obj'])
 
         @property
         def do_pol(self):
