@@ -33,15 +33,16 @@ from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
 
-def add_mmpol(scf_method):
-    if ommp.is_init():
-        return qmmmpol_for_scf(scf_method)
+def add_mmpol(scf_method, ommp_obj):
+    if ommp_obj.is_init:
+        return qmmmpol_for_scf(scf_method, ommp_obj)
     else:
         raise RuntimeError("Initialize OMMP library before adding "
                            "mmpol environment to a method.")
 
-def qmmmpol_for_scf(scf_method):
+def qmmmpol_for_scf(scf_method, ommp_obj):
     assert(isinstance(scf_method, (scf.hf.SCF, mcscf.casci.CASCI)))
+    assert(isinstance(ommp_obj, ommp.OMMPSystem))
 
     if isinstance(scf_method, scf.hf.SCF):
         # Avoid to initialize _QMMM twice
@@ -54,45 +55,34 @@ def qmmmpol_for_scf(scf_method):
                                   "supported in QM/MMPol")
 
     class QMMMPOL(_QMMM, method_class):
-        def __init__(self, scf_method):
+        def __init__(self, scf_method, ommp_obj):
             self.__dict__.update(scf_method.__dict__)
+            self.ommp_obj = ommp_obj
 
         @property
         def do_pol(self):
-            return ommp.get_pol_atoms() > 0
-
-        def get_mmpol_static_charges(self):
-            q = ommp.get_q()[:,0]
-            return q
-
-        def get_mmpol_static_dipoles(self):
-            mu = ommp.get_q()[:,1:4]
-            return mu
-
-        def get_mmpol_static_quadrupoles(self):
-            quad = ommp.get_q()[:,4:10]
-            return quad
+            return self.ommp_obj.pol_atoms > 0
 
         def get_mmpol_induced_dipoles(self):
-            if not ommp.ff_is_amoeba():
-                mu = ommp.get_ipd()[0,:,:]
+            if not self.ommp_obj.is_amoeba:
+                mu = self.ommp_obj.ipd[0,:,:]
                 return mu
             else:
-                mu_d = ommp.get_ipd()[0,:,:]
-                mu_p = ommp.get_ipd()[1,:,:]
+                mu_d = self.ommp_obj.ipd[0,:,:]
+                mu_p = self.ommp_obj.ipd[1,:,:]
                 return mu_d, mu_p
 
         @property
         def fakemol_static(self):
             if not hasattr(self, '_fakemol_static'):
-                self._fakemol_static = gto.fakemol_for_charges(ommp.get_cmm())
+                self._fakemol_static = gto.fakemol_for_charges(self.ommp_obj.cmm)
             return self._fakemol_static
 
         @property
         def fakemol_pol(self):
             if self.do_pol:
                 if not hasattr(self, '_fakemol_pol'):
-                    self._fakemol_pol = gto.fakemol_for_charges(ommp.get_cpol())
+                    self._fakemol_pol = gto.fakemol_for_charges(self.ommp_obj.cpol)
             else:
                 self._fakemol_pol = None
 
@@ -169,7 +159,7 @@ def qmmmpol_for_scf(scf_method):
                 if self.fakemol_pol is None:
                     self._nuclear_ef = numpy.zeros([0,3])
                 else:
-                    c = ommp.get_cpol() #TODO
+                    c = self.ommp_obj.cpol
                     qmat_q = self.mol.atom_charges()
                     qmat_c = self.mol.atom_coords()
                     self._nuclear_ef = numpy.zeros(c.shape, dtype="f8")
@@ -205,10 +195,10 @@ def qmmmpol_for_scf(scf_method):
                 current_ef = self.ef_at_pol_sites(dm)
 
                 # 2. update the induced dipoles
-                ommp.set_external_field(current_ef, 'inversion')
+                self.ommp_obj.set_external_field(current_ef)
 
                 # 3. get the induced dipoles
-                if not ommp.ff_is_amoeba():
+                if not self.ommp_obj.is_amoeba:
                     current_ipds = self.get_mmpol_induced_dipoles()
                 else:
                     current_ipds_d, current_ipds_p = self.get_mmpol_induced_dipoles()
@@ -219,11 +209,11 @@ def qmmmpol_for_scf(scf_method):
                                         self.ef_integrals_at_pol, current_ipds)
 
                 # 5. Compute the MMPol contribution to energy
-                if not ommp.ff_is_amoeba():
+                if not self.ommp_obj.is_amoeba:
                     e_mmpol = -0.5 * numpy.einsum('nm,nm', current_ef, current_ipds)
                 else:
                     e_mmpol = -0.5 * numpy.einsum('nm,nm', current_ef, current_ipds_d)
-                e_mmpol += ommp.get_polelec_energy()
+                e_mmpol += self.ommp_obj.get_polelec_energy()
 
             else:
                 # If there are no polarizabilities, there are no contribution to the Fock Matrix
@@ -253,13 +243,13 @@ def qmmmpol_for_scf(scf_method):
                 # DO NOT modify post-HF objects to avoid the MM charges applied twice
                 raise RuntimeError('mm_charge function cannot be applied on post-HF methods')
 
-            q = self.get_mmpol_static_charges()
+            q = self.ommp_obj.static_charges
             self.h1e_mmpol = - numpy.einsum('nmi,i->nm', self.v_integrals_at_static, q)
 
-            if ommp.ff_is_amoeba():
-                mu = self.get_mmpol_static_dipoles()
+            if self.ommp_obj.is_amoeba:
+                mu = self.ommp_obj.static_dipoles
                 self.h1e_mmpol += - numpy.einsum('inmj,ji->nm', self.ef_integrals_at_static, mu)
-                quad = self.get_mmpol_static_quadrupoles()
+                quad = self.ommp_obj.static_quadrupoles
                 self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_at_static, quad)
             return h1e + self.h1e_mmpol
 
@@ -267,9 +257,7 @@ def qmmmpol_for_scf(scf_method):
             nuc = self.mol.energy_nuc()
 
             # interactions between QM nuclei and MM particles
-            vmm = numpy.zeros(self.mol.natm)
-            ommp.potential_mm2ext(self.mol.atom_coords(),
-                                  vmm)
+            vmm = self.ommp_obj.mm_potential_at_external(self.mol.atom_coords())
             self.nuc_static_mm = numpy.dot(vmm, self.mol.atom_charges())
             nuc += self.nuc_static_mm
 
@@ -280,9 +268,9 @@ def qmmmpol_for_scf(scf_method):
             ene_el = method_class.energy_elec(self, dm, h1e, vhf)
 
             if getattr(vhf, 'e_mmpol', None):
-                e_mmpol_2e = vhf.e_mmpol - ommp.get_polelec_energy()
+                e_mmpol_2e = vhf.e_mmpol - self.ommp_obj.get_polelec_energy()
             else:
-                e_mmpol_2e = self.get_veff(dm=dm).e_mmpol - ommp.get_polelec_energy()
+                e_mmpol_2e = self.get_veff(dm=dm).e_mmpol - self.ommp_obj.get_polelec_energy()
 
             ene_el = (ene_el[0]+e_mmpol_2e,
                       ene_el[1]+e_mmpol_2e)
@@ -306,9 +294,9 @@ def qmmmpol_for_scf(scf_method):
 
                     for d in dm1:
                         current_ef = self.ef_at_pol_sites(d, exclude_nuclei=True)
-                        ommp.set_external_field(current_ef, 'inversion', exclude_mm = True)
+                        self.ommp_obj.set_external_field(current_ef, nomm=False)
 
-                        if not ommp.ff_is_amoeba():
+                        if not self.ommp_obj.is_amoeba:
                             current_ipds = self.get_mmpol_induced_dipoles()
                         else:
                             current_ipds, empty = \
@@ -333,5 +321,4 @@ def qmmmpol_for_scf(scf_method):
         Gradients = nuc_grad_method
 
     if isinstance(scf_method, scf.hf.SCF):
-        return QMMMPOL(scf_method)
-
+        return QMMMPOL(scf_method, ommp_obj)
