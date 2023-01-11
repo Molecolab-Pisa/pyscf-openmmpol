@@ -181,6 +181,10 @@ if(BUILD_LIBCINT)
         -DBLAS_LIBRARIES:STRING=${BLAS_LIBRARIES}
         -DCMAKE_C_CREATE_SHARED_LIBRARY:STRING=${C_LINK_TEMPLATE}
         -DBUILD_MARCH_NATIVE:STRING=${BUILD_MARCH_NATIVE}
+     PATCH_COMMAND git am  ${PROJECT_SOURCE_DIR}/../qmmm/patch_3c2e.diff
+     COMMAND ls > /dev/stdout
+     COMMAND cd scripts && clisp auto_intor.cl && ls
+     COMMAND mv scripts/int3c2e.c src/autocode/
   )
   add_dependencies(cgto libcint)
   add_dependencies(ao2mo libcint)

@@ -1,0 +1,25 @@
+From 2c63fc96dd82d0568e87b58f974f2f061187494c Mon Sep 17 00:00:00 2001
+From: Mattia Bondanza <mattia.bondanza@unipi.it>
+Date: Wed, 11 Jan 2023 12:18:34 +0100
+Subject: [PATCH] Added a new integral
+
+---
+ scripts/auto_intor.cl | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/scripts/auto_intor.cl b/scripts/auto_intor.cl
+index f5e8d99..27f7bcf 100644
+--- a/scripts/auto_intor.cl
++++ b/scripts/auto_intor.cl
+@@ -210,6 +210,8 @@
+   '("int3c2e_ip1ip2"            ( nabla \, \| nabla ))
+   '("int2c2e_ipip1"             ( nabla nabla \| r12 \|))
+   '("int2c2e_ip1ip2"            ( nabla \| r12 \| nabla))
++;
++ '("int3c2e_ipipip1"             ( nabla nabla nabla \, \| ))
+ )
+ 
+ (gen-cint "int3c1e.c"
+-- 
+2.35.3
+
