@@ -1,5 +1,6 @@
 import numpy as np
 from pyscf import scf
+from pyscf import dft
 from pyscf import gto
 from pyscf import qmmm
 import pyopenmmpol as ommp
@@ -24,7 +25,11 @@ molQM = gto.M(verbose=3,
               atom = molstr,
               basis='3-21g')
 
-myscf = scf.RHF(molQM)
+#myscf = scf.RHF(molQM)
+#myscf.conv_tol = 1e-10
+#myscf.init_guess = 'huckel'
+myscf = dft.RKS(molQM)
+myscf.xc = 'B3LYPG'
 
 env = ommp.OMMPSystem(INPUT_AMOEBA)
 myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
