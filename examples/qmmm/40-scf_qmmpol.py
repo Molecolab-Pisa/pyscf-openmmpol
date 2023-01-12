@@ -36,16 +36,16 @@ myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
 myscf_qmmmpol.kernel()
 
 au2k = 627.50960803
-scf_ene = myscf_qmmmpol.e_tot
 smm_ene = env.get_fixedelec_energy()
 pmm_ene = env.get_polelec_energy()
+scf_ene = myscf_qmmmpol.e_tot - smm_ene - pmm_ene
 nuc_mm_ene = myscf_qmmmpol.nuc_static_mm
 
 dm  = myscf_qmmmpol.make_rdm1()
 ele_mm_ene = np.einsum('nm,nm', myscf_qmmmpol.h1e_mmpol, dm)
 ele_p_ene = myscf_qmmmpol.get_veff(dm=dm).e_mmpol - pmm_ene
 qm_mm_ene = nuc_mm_ene + ele_mm_ene
-etot = scf_ene + smm_ene + pmm_ene
+etot = myscf_qmmmpol.e_tot
 
 print("SCF e-tot: {:20.10f} ({:20.10f})".format(scf_ene, scf_ene*au2k))
 print("MM-MM:     {:20.10f} ({:20.10f})".format(smm_ene, smm_ene*au2k))

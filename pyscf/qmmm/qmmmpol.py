@@ -278,6 +278,12 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             return ene_el
 
+        def energy_tot(self, dm=None, h1e=None, vhf=None):
+            e_tot = method_class.energy_tot(self, dm, h1e, vhf)
+            e_tot += self.ommp_obj.get_fixedelec_energy()
+            e_tot += self.ommp_obj.get_polelec_energy()
+            return e_tot
+
         def gen_response(self, *args, **kwargs):
             vind = method_class.gen_response(self, *args, **kwargs)
             is_uhf = isinstance(self, scf.uhf.UHF)
@@ -317,8 +323,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return vind_mmpol
 
         def nuc_grad_method(self):
+            return None
             scf_grad = method_class.nuc_grad_method(self)
-            return qmmm_grad_for_scf(scf_grad)
+            #return qmmm_grad_for_scf(scf_grad)
         Gradients = nuc_grad_method
 
     if isinstance(scf_method, scf.hf.SCF):
