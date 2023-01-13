@@ -34,7 +34,7 @@ import pyopenmmpol as ommp
 
 
 def add_mmpol(scf_method, ommp_obj):
-    if ommp_obj.is_init:
+    if isinstance(ommp_obj, ommp.OMMPSystem):
         return qmmmpol_for_scf(scf_method, ommp_obj)
     else:
         raise RuntimeError("Initialize OMMP library before adding "
@@ -46,7 +46,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
     if isinstance(scf_method, scf.hf.SCF):
         # Avoid to initialize _QMMM twice
-        if isinstance(scf_method, _QMMM):
+        if isinstance(scf_method, _QMMMPOL):
             # TODO Insert a log message here
             return scf_method
         method_class = scf_method.__class__
@@ -54,7 +54,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         raise NotImplementedError("Only SCF-method are currently "
                                   "supported in QM/MMPol")
 
-    class QMMMPOL(_QMMM, method_class):
+    class QMMMPOL(_QMMMPOL, method_class):
         def __init__(self, scf_method, ommp_obj):
             self.__dict__.update(scf_method.__dict__)
             self.ommp_obj = ommp_obj
@@ -152,6 +152,41 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                                                         intor='int3c2e_ip1')
                 self._ef_int_at_cpol += numpy.einsum('imnj->inmj', self._ef_int_at_cpol)
             return self._ef_int_at_cpol
+
+        @property
+        def gef_integrals_at_pol(self):
+            if not hasattr(self, '_gef_int_at_cmm'):
+                # PySCF order for field gradient tensor
+                #  0  1  2  3  4  5  6  7  8
+                # xx xy xz xy yy yz xz yz zz
+                #
+                # 1 3
+                # 2 6
+                # 5 7
+                #
+                # OMMP order for field gradient tensor
+                #  0  1  2  3  4  5
+                # xx xy yy xz yz zz
+
+                pyscf2ommp_idx = [0,1,4,2,5,8]
+
+                int1 = df.incore.aux_e2(self.mol,
+                                       self.fakemol_pol,
+                                        intor='int3c2e_ipip1')
+                # Make symmetric, (double the out-of diagonal), and compress
+                int1[[1,2,5]] += int1[[3,6,7]]
+                int1 = int1[pyscf2ommp_idx]
+
+                int2 = df.incore.aux_e2(self.mol,
+                                        self.fakemol_pol,
+                                        intor='int3c2e_ipvip1')
+                # Make symmetric, (double the out-of diagonal), and compress
+                int2[[1,2,5]] += int2[[3,6,7]]
+                int2 = int2[pyscf2ommp_idx]
+
+                self._gef_int_at_cmm = int1 + numpy.einsum('inmj->imnj', int1) + 2 * int2
+
+            return self._gef_int_at_cmm
 
         @property
         def ef_nucl_at_pol(self):
@@ -323,10 +358,95 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return vind_mmpol
 
         def nuc_grad_method(self):
-            return None
             scf_grad = method_class.nuc_grad_method(self)
-            #return qmmm_grad_for_scf(scf_grad)
+            return qmmmpol_grad_for_scf(scf_grad)
+
         Gradients = nuc_grad_method
 
     if isinstance(scf_method, scf.hf.SCF):
         return QMMMPOL(scf_method, ommp_obj)
+
+def qmmmpol_grad_for_scf(scf_grad):
+    # Why? TODO
+    if getattr(scf_grad.base, 'with_x2c', None):
+        raise NotImplementedError('X2C with QM/MM charges')
+
+    if isinstance(scf_grad, _QMMMPOLGrad):
+        return scf_grad
+
+    assert(isinstance(scf_grad.base, scf.hf.SCF) and
+           isinstance(scf_grad.base, _QMMMPOL))
+
+    grad_class = scf_grad.__class__
+    class QMMMPOLG(_QMMMPOLGrad, grad_class):
+        def __init__(self, scf_grad):
+            self.__dict__.update(scf_grad.__dict__)
+
+        def dump_flags(self, verbose=None):
+            grad_class.dump_flags(self, verbose)
+            logger.info(self, 'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms, self.base.ommp_obj.pol_atoms))
+            return self
+
+        def get_hcore(self, mol=None):
+            if mol is None:
+                mol = self.mol
+
+            if getattr(grad_class, 'get_hcore', None):
+                g_qm = grad_class.get_hcore(self, mol)
+            else:
+                # DO NOT modify post-HF objects to avoid the MM charges applied twice
+                raise NotImplementedError("For some reason QM method does not have get_hcore func.")
+
+            q = self.base.ommp_obj.static_charges
+            #TODO Why the symmetrized version is not ok? QWhy????
+            if mol.cart:
+                intor = 'int3c2e_ip1_cart'
+            else:
+                intor = 'int3c2e_ip1_sph'
+            j3c = df.incore.aux_e2(mol, self.base.fakemol_static, intor, aosym='s1',
+                                   comp=3)
+            g_mm = numpy.einsum('ipqk,k->ipq', j3c, q)
+
+            if self.base.ommp_obj.is_amoeba:
+                raise NotImplementedError("Amoeba is still to come...")
+
+            if self.base.do_pol:
+                gpol = numpy.einsum('jnmi,i->jnm',
+                                    self.base.gef_integrals_at_static[[0,1,3]],
+                                    self.base.get_mmpol_induced_dipoles()[:,0])
+                gpol += numpy.einsum('jnmi,i->jnm',
+                                     self.base.gef_integrals_at_static[[1,2,4]],
+                                    self.base.get_mmpol_induced_dipoles()[:,1])
+                gpol += numpy.einsum('jnmi,i->jnm',
+                                     self.base.gef_integrals_at_static[[3,4,5]],
+                                    self.base.get_mmpol_induced_dipoles()[:,2])
+
+                return g_qm + g_mm + gpol
+            else:
+                return g_qm + g_mm
+
+        def grad_nuc(self, mol=None, atmlst=None):
+            if mol is None:
+                mol = self.mol
+
+            if getattr(grad_class, 'grad_nuc', None):
+                g_qm = grad_class.grad_nuc(self, mol, atmlst)
+            else:
+                # DO NOT modify post-HF objects to avoid the MM charges applied twice
+                raise NotImplementedError("For some reason QM method does not have grad_nuc func.")
+
+            g_mm = -numpy.einsum('i,ij->ij',
+                                 self.mol.atom_charges(),
+                                 scf_grad.base.ommp_obj.mmpol_field_at_external(self.mol.atom_coords()))
+            if atmlst is not None:
+                g_mm = g_mm[atmlst]
+
+            return g_qm + g_mm
+
+    return QMMMPOLG(scf_grad)
+
+class _QMMMPOLGrad:
+    pass
+
+class _QMMMPOL:
+    pass
