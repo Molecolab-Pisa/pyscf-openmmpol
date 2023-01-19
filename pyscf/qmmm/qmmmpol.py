@@ -451,21 +451,25 @@ def qmmmpol_grad_for_scf(scf_grad):
         def MM_atoms_grad(self):
             dm = self.base.make_rdm1()
 
+            ef_QMatMM = self.base.ef_at_fixed_sites(dm)
+            force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
             if self.base.ommp_obj.is_amoeba:
-                raise NotImplementedError("AMOEBA FORCES NOT IMPLEMENTED")
-            else:
-                ef_QMatMM = self.base.ef_at_fixed_sites(dm)
-                force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
+                print("Missing interaction static dipoles, static quadrupoles QM dens")
 
-                if self.base.do_pol:
-                    gef_QMatPOL = self.base.gef_at_pol_sites(dm)
+            if self.base.do_pol:
+                gef_QMatPOL = self.base.gef_at_pol_sites(dm)
+                if not self.base.ommp_obj.is_amoeba:
                     mu = self.base.get_mmpol_induced_dipoles()
-                    force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
-                    force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
-                    force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
+                else:
+                    mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
+                    mu = 0.5 * (mu_d + mu_p)
 
-                force += self.base.ommp_obj.do_polelec_grad()
-                force += self.base.ommp_obj.do_fixedelec_grad()
+                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
+                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
+                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
+
+            force += self.base.ommp_obj.do_polelec_grad()
+            force += self.base.ommp_obj.do_fixedelec_grad()
 
             return force
 
@@ -488,9 +492,8 @@ def qmmmpol_grad_for_scf(scf_grad):
             j3c = df.incore.aux_e2(mol, self.base.fakemol_static, intor, aosym='s1',
                                    comp=3)
             g_mm = numpy.einsum('ipqk,k->ipq', j3c, q)
-
             if self.base.ommp_obj.is_amoeba:
-                raise NotImplementedError("Amoeba is still to come...")
+                print("MISSING TERMS HERE!!")
 
             if self.base.do_pol:
                 ints = df.incore.aux_e2(self.base.mol,
@@ -501,7 +504,11 @@ def qmmmpol_grad_for_scf(scf_grad):
                                         self.base.fakemol_pol,
                                         intor='int3c2e_ipvip1')
 
-                mu = self.base.get_mmpol_induced_dipoles()
+                if not self.base.ommp_obj.is_amoeba:
+                    mu = self.base.get_mmpol_induced_dipoles()
+                else:
+                    mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
+                    mu = 0.5 * (mu_p + mu_d)
 
                 g_pol = numpy.zeros(g_mm.shape)
                 g_pol[0] = numpy.einsum('ipqk,ki->pq', ints[0:3], mu)
