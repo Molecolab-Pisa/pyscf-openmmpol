@@ -354,9 +354,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 nnni_j = df.incore.aux_e2(self.mol,
                                           self.fakemol_static,
                                           intor='int3c2e_ipipip1')
-                nni_j = df.incore.aux_e2(self.mol,
-                                         self.fakemol_static,
-                                         intor='int3c2e_ipipvip1')
+                nni_nj = df.incore.aux_e2(self.mol,
+                                          self.fakemol_static,
+                                          intor='int3c2e_ipipvip1')
                 self._Hef_int_at_cmm = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
                                        3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
 
@@ -380,9 +380,30 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return self._nuclear_Hef_fixed
 
         def Hef_at_fixed_sites(self, dm, exclude_nuclei=False):
-            Hef = numpy.einsum('inmj,nm->ji',
+            # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
+            #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
+            #14  15  16  17  18  19  20  21  22  23  24  25  26
+            #yyz yzx yzy yzz zxx zxy zxz zyx zyy zyz zzx zzy zzz
+            # OpenMMPol order:
+            # 0   1   2   3   4   5   6   7   8   9
+            # xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz
+            # 0   1   2   4   5   8   13  14  17  26
+            #     3   6  10   7  20       16  23
+            #     9  18  12  11  24       22  25
+            #                15
+            #                19
+            #                21
+            Hef = numpy.einsum('inmj,nm->ij',
                               self.Hef_integrals_at_fixed,
                               dm, dtype="f8")
+            Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
+            Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
+            Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
+            Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
+            Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
+            Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
+            Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+            Hef = numpy.einsum('ij->ji', Hef[[0,1,2,4,5,8,13,14,17,26]])
             if not exclude_nuclei:
                 Hef += self.Hef_nucl_at_fixed
             return Hef

@@ -426,6 +426,8 @@ _INTOR_FUNCTIONS = {
     'int3c2e_ipip2'             : (9, 9),
     'int3c2e_ipvip1'            : (9, 9),
     'int3c2e_ip1ip2'            : (9, 9),
+    'int3c2e_ipipip1'           : (27, 27),
+    'int3c2e_ipipvip1'           : (27, 27),
     'int2c2e_ip1ip2'            : (9, 9),
     'int2c2e_ipip1'             : (9, 9),
     'int3c1e'                   : (1, 1),
