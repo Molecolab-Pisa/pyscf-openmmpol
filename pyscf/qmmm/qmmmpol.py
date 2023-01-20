@@ -587,7 +587,15 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
+
+                quad = self.base.ommp_obj.static_quadrupoles
                 Hef_QMatMM = self.base.Hef_at_fixed_sites(dm)
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[0,1,2]], quad[:,0]) #xx
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,3,4]], quad[:,1]) #xy
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[3,6,7]], quad[:,2]) #yy
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[2,4,5]], quad[:,3]) #xz
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,7,8]], quad[:,4]) #yz
+                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
 
             if self.base.do_pol:
                 gef_QMatPOL = self.base.gef_at_pol_sites(dm)
