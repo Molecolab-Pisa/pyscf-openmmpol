@@ -352,10 +352,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         def Hef_integrals_at_fixed(self):
             if not hasattr(self, '_Hef_int_at_cmm'):
                 nnni_j = df.incore.aux_e2(self.mol,
-                                          self.fakemol_fixed,
+                                          self.fakemol_static,
                                           intor='int3c2e_ipipip1')
                 nni_j = df.incore.aux_e2(self.mol,
-                                         self.fakemol_fixed,
+                                         self.fakemol_static,
                                          intor='int3c2e_ipipvip1')
                 self._Hef_int_at_cmm = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
                                        3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
