@@ -348,6 +348,45 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 gef += self.gef_nucl_at_fixed
             return gef
 
+        @property
+        def Hef_integrals_at_fixed(self):
+            if not hasattr(self, '_Hef_int_at_cmm'):
+                nnni_j = df.incore.aux_e2(self.mol,
+                                          self.fakemol_fixed,
+                                          intor='int3c2e_ipipip1')
+                nni_j = df.incore.aux_e2(self.mol,
+                                         self.fakemol_fixed,
+                                         intor='int3c2e_ipipvip1')
+                self._Hef_int_at_cmm = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
+                                       3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
+
+            return self._Hef_int_at_cmm
+
+        @property
+        def Hef_nucl_at_fixed(self):
+            # nuclear component of EF should only be computed once
+            if not hasattr(self, '_nuclear_Hef_fixed'):
+                c = self.ommp_obj.cmm
+                qmat_q = self.mol.atom_charges()
+                qmat_c = self.mol.atom_coords()
+                self._nuclear_Hef_fixed = ommp.charges_elec_prop(qmat_c,
+                                                              qmat_q,
+                                                              c,
+                                                              False,
+                                                              False,
+                                                              False,
+                                                              True)['EHess']
+
+            return self._nuclear_Hef_fixed
+
+        def Hef_at_fixed_sites(self, dm, exclude_nuclei=False):
+            Hef = numpy.einsum('inmj,nm->ji',
+                              self.Hef_integrals_at_fixed,
+                              dm, dtype="f8")
+            if not exclude_nuclei:
+                Hef += self.Hef_nucl_at_fixed
+            return Hef
+
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
             vhf = method_class.get_veff(self, mol, dm, *args, **kwargs)
 
@@ -527,6 +566,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
+                Hef_QMatMM = self.base.Hef_at_fixed_sites(dm)
 
             if self.base.do_pol:
                 gef_QMatPOL = self.base.gef_at_pol_sites(dm)
