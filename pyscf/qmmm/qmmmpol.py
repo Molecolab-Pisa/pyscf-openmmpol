@@ -608,7 +608,9 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
                 force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
-            print(force)
+
+            force += self.base.ommp_obj.do_rotation_grad(ef_QMatMM, -gef_QMatMM)
+
             force += self.base.ommp_obj.do_polelec_grad()
             force += self.base.ommp_obj.do_fixedelec_grad()
 
