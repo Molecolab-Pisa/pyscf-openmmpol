@@ -269,21 +269,18 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         @property
         def gef_nucl_at_fixed(self):
             # nuclear component of EF should only be computed once
-            if self.fakemol_pol is None:
-                self._nuclear_gef_fixed = numpy.zeros([0,6])
-            else:
-                c = self.ommp_obj.cmm
-                qmat_q = self.mol.atom_charges()
-                qmat_c = self.mol.atom_coords()
+            c = self.ommp_obj.cmm
+            qmat_q = self.mol.atom_charges()
+            qmat_c = self.mol.atom_coords()
 
-                self._nuclear_gef_fixed = ommp.charges_elec_prop(qmat_c,
-                                                                 qmat_q,
-                                                                 c,
-                                                                 False,
-                                                                 False,
-                                                                 True,
-                                                                 False)['Egrad']
-                self._nuclear_gef_fixed *= -1 #Those are positive charges!
+            self._nuclear_gef_fixed = ommp.charges_elec_prop(qmat_c,
+                                                             qmat_q,
+                                                             c,
+                                                             False,
+                                                             False,
+                                                             True,
+                                                             False)['Egrad']
+            self._nuclear_gef_fixed *= -1 #Those are positive charges!
             return self._nuclear_gef_fixed
 
         def ef_at_pol_sites(self, dm, exclude_nuclei=False):
@@ -649,6 +646,24 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_mm[0] += numpy.einsum('ipqk,ki->pq', ints[0:3], mu)
                 g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[3:6], mu)
                 g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[6:9], mu)
+
+                A = df.incore.aux_e2(self.base.mol,
+                                        self.base.fakemol_static,
+                                        intor='int3c2e_ipipip1')
+                B =   df.incore.aux_e2(self.base.mol,
+                                       self.base.fakemol_static,
+                                       intor='int3c2e_ipipvip1')
+                Bt = numpy.einsum('ipqk->iqpk',
+                                  numpy.concatenate((B[::3],
+                                                     B[1::3],
+                                                     B[2::3]), axis=0))
+                ints = A + 2*B + Bt
+
+                quad = self.base.ommp_obj.static_quadrupoles
+
+                g_mm[0] += numpy.einsum('ipqk,ki->pq', ints[0:9],   quad[:,[0,1,3,1,2,4,3,4,5]])
+                g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[9:18],  quad[:,[0,1,3,1,2,4,3,4,5]])
+                g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[18:27], quad[:,[0,1,3,1,2,4,3,4,5]])
 
             if self.base.do_pol:
                 ints = df.incore.aux_e2(self.base.mol,
