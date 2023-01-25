@@ -4,7 +4,7 @@ from pyscf import gto
 from pyscf import qmmm
 import pyopenmmpol as ommp
 
-INPUT_AMOEBA = 'NMA_AMOEBA.mmp'
+INPUT_AMOEBA = 'NMA_AMOEBA_quad.mmp'
 
 molstr = \
 ''' C               -1.574500     1.555900     0.071100
