@@ -37,17 +37,17 @@ def add_mmpol(scf_method, ommp_obj):
     if isinstance(ommp_obj, ommp.OMMPSystem):
         return qmmmpol_for_scf(scf_method, ommp_obj)
     else:
-        raise RuntimeError("Initialize OMMP library before adding "
-                           "mmpol environment to a method.")
+        raise RuntimeError("""Use an instance of OMMPSystem to
+                           initalize the environment.""")
 
 def qmmmpol_for_scf(scf_method, ommp_obj):
-    assert(isinstance(scf_method, (scf.hf.SCF, mcscf.casci.CASCI)))
     assert(isinstance(ommp_obj, ommp.OMMPSystem))
 
     if isinstance(scf_method, scf.hf.SCF):
         # Avoid to initialize _QMMM twice
-        if isinstance(scf_method, _QMMMPOL):
-            # TODO Insert a log message here
+        if isinstance(scf_method, _QMMM):
+            logger.info(scf_method, "The SCF method passed to qmmmpol_for_scf "
+                                    "already contains an environment. Doing nothing.")
             return scf_method
         method_class = scf_method.__class__
     else:
