@@ -55,6 +55,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                                   "supported in QM/MMPol")
 
     class QMMMPOL(_QMMMPOL, method_class):
+        """Class overload over an SCF method, to add the contribution
+        from QMMMPol environment through OMMP"""
+
         def __init__(self, scf_method, ommp_obj):
             self.__dict__.update(scf_method.__dict__)
             self.ommp_obj = ommp_obj
@@ -62,9 +65,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def do_pol(self):
+            """Flag to check if the MM system has non-zero polarizability
+            and enable/disable certain part of the calculation."""
             return self.ommp_obj.pol_atoms > 0
 
         def get_mmpol_induced_dipoles(self):
+            """Return the last induced dipoles computed by OMMP removing
+            the index on the dipole set. For non-amoeba FF, a single
+            set is returned; for AMOEBA D and P dipoles are returned as
+            a touple of numpy array."""
+
             if not self.ommp_obj.is_amoeba:
                 mu = self.ommp_obj.ipd[0,:,:]
                 return mu
@@ -75,12 +85,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def fakemol_static(self):
+            """Fakemol for computing 3-centers-2-electron integrals
+            at polarizable sites coordinates"""
             if not hasattr(self, '_fakemol_static'):
                 self._fakemol_static = gto.fakemol_for_charges(self.ommp_obj.cmm)
             return self._fakemol_static
 
         @property
         def fakemol_pol(self):
+            """Fakemol for computing 3-centers-2-electron integrals
+            at static sites coordinates"""
             if self.do_pol:
                 if not hasattr(self, '_fakemol_pol'):
                     self._fakemol_pol = gto.fakemol_for_charges(self.ommp_obj.cpol)
@@ -112,10 +126,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 # PySCF order for field gradient tensor
                 #  0  1  2  3  4  5  6  7  8
                 # xx xy xz xy yy yz xz yz zz
-                #
-                # 1 3
-                # 2 6
-                # 5 7
                 #
                 # OMMP order for field gradient tensor
                 #  0  1  2  3  4  5
@@ -406,6 +416,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return Hef
 
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
+            """Function to add the contributions from polarizable sites
+            to the Fock matrix. To do so:
+            (1) the electric field at polarizable sites is computed
+            (2) this field is used to solve the linear system and
+                    compute the induced dipoles.
+            (3) the induced dipoles are read and contracted with the
+                    electric field operator to provide the contribution
+                    to the fock matrix.
+            (4) the contribution to the energy is also computed."""
+
             vhf = method_class.get_veff(self, mol, dm, *args, **kwargs)
 
             if self.fakemol_pol is not None:
@@ -419,18 +439,18 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 # 2. update the induced dipoles
                 self.ommp_obj.set_external_field(current_ef)
 
-                # 3. get the induced dipoles
+                # 3.1. get the induced dipoles
                 if not self.ommp_obj.is_amoeba:
                     current_ipds = self.get_mmpol_induced_dipoles()
                 else:
                     current_ipds_d, current_ipds_p = self.get_mmpol_induced_dipoles()
                     current_ipds = (current_ipds_d+current_ipds_p) / 2
 
-                # 4. compute the induced dipoles term in the Hamiltonian
+                # 3.2. compute the induced dipoles term in the Hamiltonian
                 v_mmpol = -numpy.einsum('inmj,ji->nm',
                                         self.ef_integrals_at_pol, current_ipds)
 
-                # 5. Compute the MMPol contribution to energy
+                # 4. Compute the MMPol contribution to energy
                 if not self.ommp_obj.is_amoeba:
                     e_mmpol = -0.5 * numpy.einsum('nm,nm', current_ef, current_ipds)
                 else:
@@ -447,6 +467,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                      diis=None, diis_start_cycle=None,
                      level_shift_factor=None, damp_factor=None):
+            """Assemble the Fock matrix for SCF with MMPol environments."""
 
             if getattr(vhf, 'v_mmpol', None) is None:
                 vhf = self.get_veff(self.mol, dm)
@@ -456,6 +477,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
 
         def get_hcore(self, mol=None):
+            """Compute the core Hamiltonian for MMPol-SCF"""
             if mol is None:
                 mol = self.mol
 
@@ -463,7 +485,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 h1e = method_class.get_hcore(self, mol)
             else:
                 # DO NOT modify post-HF objects to avoid the MM charges applied twice
-                raise RuntimeError('mm_charge function cannot be applied on post-HF methods')
+                raise RuntimeError('openMMPol cannot be applied here in post-HF methods')
 
             q = self.ommp_obj.static_charges
             self.h1e_mmpol = - numpy.einsum('nmi,i->nm', self.v_integrals_at_static, q)
@@ -476,6 +498,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return h1e + self.h1e_mmpol
 
         def energy_nuc(self):
+            """Computes the interaction between nuclei and nuclei and
+            between nuclei and external MM centers"""
+            # interactions between QM nuclei and QM nuclei
             nuc = self.mol.energy_nuc()
 
             # interactions between QM nuclei and MM particles
@@ -500,12 +525,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return ene_el
 
         def energy_tot(self, dm=None, h1e=None, vhf=None):
+            """Compute total SCF energy, that also includes the energy
+            of the MM part."""
             e_tot = method_class.energy_tot(self, dm, h1e, vhf)
             e_tot += self.ommp_obj.get_fixedelec_energy()
             e_tot += self.ommp_obj.get_polelec_energy()
+            # Todo add also bonded / vdw terms
             return e_tot
 
         def gen_response(self, *args, **kwargs):
+            """Compute the response function accounting for the MMPol terms"""
             vind = method_class.gen_response(self, *args, **kwargs)
             is_uhf = isinstance(self, scf.uhf.UHF)
 
@@ -544,6 +573,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return vind_mmpol
 
         def nuc_grad_method(self):
+            """Return a method for computing nuclear gradients."""
             scf_grad = method_class.nuc_grad_method(self)
             return qmmmpol_grad_for_scf(scf_grad)
 
