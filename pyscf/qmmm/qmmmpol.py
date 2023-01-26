@@ -127,49 +127,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 #  0  1  2  3  4  5  6  7  8
                 # xx xy xz xy yy yz xz yz zz
                 #
-                # OMMP order for field gradient tensor
-                #  0  1  2  3  4  5
-                # xx xy yy xz yz zz
-
-                pyscf2ommp_idx = [0,1,4,2,5,8]
-
-                int1 = df.incore.aux_e2(self.mol,
-                                       self.fakemol_static,
-                                        intor='int3c2e_ipip1')
-                # Make symmetric, (double the out-of diagonal), and compress
-                int1[[1,2,5]] += int1[[3,6,7]]
-                int1 = int1[pyscf2ommp_idx]
-
-                int2 = df.incore.aux_e2(self.mol,
-                                        self.fakemol_static,
-                                        intor='int3c2e_ipvip1')
-                # Make symmetric, (double the out-of diagonal), and compress
-                int2[[1,2,5]] += int2[[3,6,7]]
-                int2 = int2[pyscf2ommp_idx]
-
-                self._gef_int_at_cmm = int1 + numpy.einsum('inmj->imnj', int1) + 2 * int2
-
-            return self._gef_int_at_cmm
-
-        @property
-        def ef_integrals_at_pol(self):
-            if self.fakemol_pol is None:
-                return np.zeros([3, self.mol.nbas, self.mol.nbas, 0])
-
-            if not hasattr(self, '_ef_int_at_cpol'):
-                self._ef_int_at_cpol = df.incore.aux_e2(self.mol,
-                                                        self.fakemol_pol,
-                                                        intor='int3c2e_ip1')
-                self._ef_int_at_cpol += numpy.einsum('imnj->inmj', self._ef_int_at_cpol)
-            return self._ef_int_at_cpol
-
-        @property
-        def gef_integrals_at_fixed(self):
-            if not hasattr(self, '_gef_int_at_mm'):
-                # PySCF order for field gradient tensor
-                #  0  1  2  3  4  5  6  7  8
-                # xx xy xz xy yy yz xz yz zz
-                #
                 # 1 3
                 # 2 6
                 # 5 7
@@ -183,7 +140,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 int1 = df.incore.aux_e2(self.mol,
                                         self.fakemol_static,
                                         intor='int3c2e_ipip1')
-                # Make symmetric, (double the out-of diagonal), and compress
+                # Make symmetric, and compress
                 int1[[1,2,5]] += int1[[3,6,7]]
                 int1[[1,2,5]] /= 2.0
                 int1 = int1[pyscf2ommp_idx]
@@ -199,6 +156,56 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self._gef_int_at_cmm = int1 + numpy.einsum('inmj->imnj', int1) + 2 * int2
 
             return self._gef_int_at_cmm
+
+        @property
+        def Hef_integrals_at_static(self):
+            # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
+            #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
+            #14  15  16  17  18  19  20  21  22  23  24  25  26
+            #yyz yzx yzy yzz zxx zxy zxz zyx zyy zyz zzx zzy zzz
+            # OpenMMPol order:
+            # 0   1   2   3   4   5   6   7   8   9
+            # xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz
+            # 0   1   2   4   5   8   13  14  17  26
+            #     3   6  10   7  20       16  23
+            #     9  18  12  11  24       22  25
+            #                15
+            #                19
+            #                21
+            if not hasattr(self, '_Hef_int_at_cmm'):
+                nnni_j = df.incore.aux_e2(self.mol,
+                                          self.fakemol_static,
+                                          intor='int3c2e_ipipip1')
+                nni_nj = df.incore.aux_e2(self.mol,
+                                          self.fakemol_static,
+                                          intor='int3c2e_ipipvip1')
+                Hef = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
+                      3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
+
+                # Compress and make symmetric
+                Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
+                Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
+                Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
+                Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
+                Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
+                Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
+                Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+                self._Hef_int_at_cmm = Hef[[0,1,2,4,5,8,13,14,17,26]]
+
+            return self._Hef_int_at_cmm
+
+        @property
+        def ef_integrals_at_pol(self):
+            if self.fakemol_pol is None:
+                return np.zeros([3, self.mol.nbas, self.mol.nbas, 0])
+
+            if not hasattr(self, '_ef_int_at_cpol'):
+                self._ef_int_at_cpol = df.incore.aux_e2(self.mol,
+                                                        self.fakemol_pol,
+                                                        intor='int3c2e_ip1')
+                self._ef_int_at_cpol += numpy.einsum('imnj->inmj', self._ef_int_at_cpol)
+            return self._ef_int_at_cpol
+
 
         @property
         def gef_integrals_at_pol(self):
@@ -349,25 +356,12 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             at fixed electrostatic sites"""
 
             gef = numpy.einsum('inmj,nm->ji',
-                              self.gef_integrals_at_fixed,
+                              self.gef_integrals_at_static,
                               dm, dtype="f8")
             if not exclude_nuclei:
                 gef += self.gef_nucl_at_fixed
             return gef
 
-        @property
-        def Hef_integrals_at_fixed(self):
-            if not hasattr(self, '_Hef_int_at_cmm'):
-                nnni_j = df.incore.aux_e2(self.mol,
-                                          self.fakemol_static,
-                                          intor='int3c2e_ipipip1')
-                nni_nj = df.incore.aux_e2(self.mol,
-                                          self.fakemol_static,
-                                          intor='int3c2e_ipipvip1')
-                self._Hef_int_at_cmm = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
-                                       3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
-
-            return self._Hef_int_at_cmm
 
         @property
         def Hef_nucl_at_fixed(self):
@@ -387,30 +381,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return self._nuclear_Hef_fixed
 
         def Hef_at_fixed_sites(self, dm, exclude_nuclei=False):
-            # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
-            #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
-            #14  15  16  17  18  19  20  21  22  23  24  25  26
-            #yyz yzx yzy yzz zxx zxy zxz zyx zyy zyz zzx zzy zzz
-            # OpenMMPol order:
-            # 0   1   2   3   4   5   6   7   8   9
-            # xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz
-            # 0   1   2   4   5   8   13  14  17  26
-            #     3   6  10   7  20       16  23
-            #     9  18  12  11  24       22  25
-            #                15
-            #                19
-            #                21
-            Hef = numpy.einsum('inmj,nm->ij',
-                              self.Hef_integrals_at_fixed,
+            Hef = numpy.einsum('inmj,nm->ji',
+                              self.Hef_integrals_at_static,
                               dm, dtype="f8")
-            Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
-            Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
-            Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
-            Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
-            Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
-            Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
-            Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
-            Hef = numpy.einsum('ij->ji', Hef[[0,1,2,4,5,8,13,14,17,26]])
+
             if not exclude_nuclei:
                 Hef += self.Hef_nucl_at_fixed
             return Hef
@@ -494,6 +468,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 mu = self.ommp_obj.static_dipoles
                 self.h1e_mmpol += - numpy.einsum('inmj,ji->nm', self.ef_integrals_at_static, mu)
                 quad = self.ommp_obj.static_quadrupoles
+
+                # Off diagonal components are multiplied by two
+                quad[:,[1,3,4]] *= 2.0
                 self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_at_static, quad)
             return h1e + self.h1e_mmpol
 
