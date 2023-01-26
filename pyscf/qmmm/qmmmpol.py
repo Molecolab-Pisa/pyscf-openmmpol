@@ -611,7 +611,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             force += self.base.ommp_obj.do_polelec_grad()
             force += self.base.ommp_obj.do_fixedelec_grad()
 
-            return force
+            return -force
 
         def get_hcore(self, mol=None):
             if mol is None:
@@ -708,8 +708,8 @@ def qmmmpol_grad_for_scf(scf_grad):
 
     return QMMMPOLG(scf_grad)
 
-class _QMMMPOLGrad:
-    pass
 
-class _QMMMPOL:
+class _QMMMPOL(_QMMM):
+    pass
+class _QMMMPOLGrad(_QMMMGrad):
     pass
