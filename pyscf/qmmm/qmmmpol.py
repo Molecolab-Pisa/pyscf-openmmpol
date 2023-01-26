@@ -105,6 +105,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def v_integrals_at_static(self):
+            """Electrostatic potential integrals <\mu|r^{-1}|\\nu> = (\mu,\\nu|\delta)
+            at coordinates of MM atoms.
+            For a reference on how 1-electron integrals can be computed as
+            3-center-2-electron electron integrals see Chem. Phys. Lett vol. 206,
+            pp. 239-246."""
             if not hasattr(self, '_v_int_at_cmm'):
                 self._v_int_at_cmm = df.incore.aux_e2(self.mol,
                                                       self.fakemol_static,
@@ -113,6 +118,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def ef_integrals_at_static(self):
+            """Electric field integrals
+            <mu|\hat(E)|nu> = <\mu|\\nabla r^{-1}|\\nu> =
+                            = (\\nabla\mu\\nu|\delta) + (\mu\\nabla\\nu|\delta)
+                            = (\\nabla\mu\\nu|\delta) + (\\nabla\mu\\nu|\delta)^\dagger
+            at coordinates of MM atoms."""
             if not hasattr(self, '_ef_int_at_cmm'):
                 self._ef_int_at_cmm = df.incore.aux_e2(self.mol,
                                                        self.fakemol_static,
@@ -122,6 +132,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def gef_integrals_at_static(self):
+            """Electric field gradients integrals
+            <mu|\hat(G)|nu> = <\mu|\\nabla\\nabla r^{-1}|\\nu> =
+                            = ... =
+                            = (\\nabla\\nabla\mu\\nu|\delta) +
+                              (\\nabla\\nabla\mu\\nu|\delta)^\dagger +
+                              2 (\\nabla\mu\\nabla\\nu|\delta)
+            at coordinates of MM atoms. Those integrals have formally
+            9 different components, but we use it symmetrized and
+            compressed."""
             if not hasattr(self, '_gef_int_at_cmm'):
                 # PySCF order for field gradient tensor
                 #  0  1  2  3  4  5  6  7  8
@@ -135,30 +154,34 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 #  0  1  2  3  4  5
                 # xx xy yy xz yz zz
 
-                pyscf2ommp_idx = [0,1,4,2,5,8]
-
-                int1 = df.incore.aux_e2(self.mol,
+                nni_j = df.incore.aux_e2(self.mol,
                                         self.fakemol_static,
                                         intor='int3c2e_ipip1')
-                # Make symmetric, and compress
-                int1[[1,2,5]] += int1[[3,6,7]]
-                int1[[1,2,5]] /= 2.0
-                int1 = int1[pyscf2ommp_idx]
 
-                int2 = df.incore.aux_e2(self.mol,
+                ni_nj = df.incore.aux_e2(self.mol,
                                         self.fakemol_static,
                                         intor='int3c2e_ipvip1')
-                # Make symmetric, (double the out-of diagonal), and compress
-                int2[[1,2,5]] += int2[[3,6,7]]
-                int2[[1,2,5]] /= 2.0
-                int2 = int2[pyscf2ommp_idx]
 
-                self._gef_int_at_cmm = int1 + numpy.einsum('inmj->imnj', int1) + 2 * int2
+                Gef = nni_j + numpy.einsum('inmj->imnj', nni_j) + 2 * ni_nj
+
+                Gef[[1,2,5]] += Gef[[3,6,7]]
+                Gef[[1,2,5]] /= 2.0
+                self._gef_int_at_cmm = Gef[[0,1,4,2,5,8]]
 
             return self._gef_int_at_cmm
 
         @property
         def Hef_integrals_at_static(self):
+            """Electric field Hessian integrals
+            <mu|\hat(G)|nu> = <\mu|\\nabla \\nabla\\nabla r^{-1}|\\nu> =
+                            = ... =
+                            = (\\nabla\\nabla\\nabla\mu\\nu|\delta) +
+                              (\\nabla\\nabla\\nabla\mu\\nu|\delta)^\dagger +
+                              3 (\\nabla\\nabla\mu\\nabla\\nu|\delta) +
+                              3 (\\nabla\\nabla\mu\\nabla\\nu|\delta)^\dagger
+            at coordinates of MM atoms. Those integrals have formally
+            27 different components, but we use it symmetrized and
+            compressed."""
             # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
             #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
             #14  15  16  17  18  19  20  21  22  23  24  25  26
@@ -210,18 +233,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         @property
         def gef_integrals_at_pol(self):
             if not hasattr(self, '_gef_int_at_cpol'):
-                # PySCF order for field gradient tensor
-                #  0  1  2  3  4  5  6  7  8
-                # xx xy xz xy yy yz xz yz zz
-                #
-                # 1 3
-                # 2 6
-                # 5 7
-                #
-                # OMMP order for field gradient tensor
-                #  0  1  2  3  4  5
-                # xx xy yy xz yz zz
-
                 pyscf2ommp_idx = [0,1,4,2,5,8]
 
                 int1 = df.incore.aux_e2(self.mol,
@@ -329,42 +340,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             return self._nuclear_ef_fixed
 
-        def ef_at_fixed_sites(self, dm, exclude_nuclei=False):
-            """Compute the electric field generated by the QM system with density dm
-            at fixed electrostatic sites"""
-
-            ef = numpy.einsum('inmj,nm->ji',
-                              self.ef_integrals_at_static,
-                              dm, dtype="f8")
-            if not exclude_nuclei:
-                ef += self.ef_nucl_at_fixed
-            return ef
-
-        def gef_at_pol_sites(self, dm, exclude_nuclei=False):
-            """Compute the electric field generated by the QM system with density dm
-            at fixed electrostatic sites"""
-
-            gef = numpy.einsum('inmj,nm->ji',
-                              self.gef_integrals_at_pol,
-                              dm, dtype="f8")
-            if not exclude_nuclei:
-                gef += self.gef_nucl_at_pol
-            return gef
-
-        def gef_at_fixed_sites(self, dm, exclude_nuclei=False):
-            """Compute the electric field generated by the QM system with density dm
-            at fixed electrostatic sites"""
-
-            gef = numpy.einsum('inmj,nm->ji',
-                              self.gef_integrals_at_static,
-                              dm, dtype="f8")
-            if not exclude_nuclei:
-                gef += self.gef_nucl_at_fixed
-            return gef
-
-
         @property
-        def Hef_nucl_at_fixed(self):
+        def Hef_nucl_at_static(self):
             # nuclear component of EF should only be computed once
             if not hasattr(self, '_nuclear_Hef_fixed'):
                 c = self.ommp_obj.cmm
@@ -380,13 +357,48 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             return self._nuclear_Hef_fixed
 
-        def Hef_at_fixed_sites(self, dm, exclude_nuclei=False):
+        def ef_at_fixed_sites(self, dm, exclude_nuclei=False):
+            """Compute the electric field generated by the QM system with density dm
+            at fixed electrostatic sites"""
+
+            ef = numpy.einsum('inmj,nm->ji',
+                              self.ef_integrals_at_static,
+                              dm, dtype="f8")
+            if not exclude_nuclei:
+                ef += self.ef_nucl_at_fixed
+            return ef
+
+        def gef_at_pol(self, dm, exclude_nuclei=False):
+            """Compute the electric field generated by the QM system with density dm
+            at fixed electrostatic sites"""
+
+            gef = numpy.einsum('inmj,nm->ji',
+                              self.gef_integrals_at_pol,
+                              dm, dtype="f8")
+            if not exclude_nuclei:
+                gef += self.gef_nucl_at_pol
+            return gef
+
+        def gef_at_static(self, dm, exclude_nuclei=False):
+            """Compute the electric field generated by the QM system with density dm
+            at fixed electrostatic sites"""
+
+            gef = numpy.einsum('inmj,nm->ji',
+                              self.gef_integrals_at_static,
+                              dm, dtype="f8")
+            if not exclude_nuclei:
+                gef += self.gef_nucl_at_fixed
+            return gef
+
+
+
+        def Hef_at_static(self, dm, exclude_nuclei=False):
             Hef = numpy.einsum('inmj,nm->ji',
                               self.Hef_integrals_at_static,
                               dm, dtype="f8")
 
             if not exclude_nuclei:
-                Hef += self.Hef_nucl_at_fixed
+                Hef += self.Hef_nucl_at_static
             return Hef
 
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
@@ -587,13 +599,13 @@ def qmmmpol_grad_for_scf(scf_grad):
             force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
             if self.base.ommp_obj.is_amoeba:
                 mu = self.base.ommp_obj.static_dipoles
-                gef_QMatMM = self.base.gef_at_fixed_sites(dm)
+                gef_QMatMM = self.base.gef_at_static(dm)
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
 
                 quad = self.base.ommp_obj.static_quadrupoles
-                Hef_QMatMM = self.base.Hef_at_fixed_sites(dm)
+                Hef_QMatMM = self.base.Hef_at_static(dm)
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[0,1,2]], quad[:,0]) #xx
                 force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,3,4]], quad[:,1]) #xy
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[3,6,7]], quad[:,2]) #yy
@@ -602,7 +614,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
 
             if self.base.do_pol:
-                gef_QMatPOL = self.base.gef_at_pol_sites(dm)
+                gef_QMatPOL = self.base.gef_at_pol(dm)
                 if not self.base.ommp_obj.is_amoeba:
                     mu = self.base.get_mmpol_induced_dipoles()
                 else:
