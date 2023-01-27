@@ -572,7 +572,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,3,4]], quad[:,1]) #xy
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[3,6,7]], quad[:,2]) #yy
                 force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[2,4,5]], quad[:,3]) #xz
-                force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,7,8]], quad[:,4]) #yz
+                force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[4,7,8]], quad[:,4]) #yz
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
 
                 # Contribution for the multipoles rotation
@@ -594,7 +594,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             force += self.base.ommp_obj.do_polelec_grad()
             force += self.base.ommp_obj.do_fixedelec_grad()
 
-            return -force
+            return force
 
         def get_hcore(self, mol=None):
             """Computes QM/MMPol contribution to the derivative
