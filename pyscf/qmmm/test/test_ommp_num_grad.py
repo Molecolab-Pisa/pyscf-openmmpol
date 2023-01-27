@@ -99,8 +99,8 @@ if np.allclose(ana_grad_MM, num_grad_MM, rtol=1e-4, atol=1e-6):
     print("Forces on MM atoms are OK")
 else:
     print("Analytical Forces on MM atoms")
-    print(ana_grad_QM)
+    print(ana_grad_MM)
     print("Numerical Forces on MM atoms")
-    print(num_grad_QM)
+    print(num_grad_MM)
     print("Max absolute diff: {}".format(np.max(np.abs(ana_grad_MM-num_grad_MM))))
     print("Max absolute diff: {}".format(np.max(np.abs(ana_grad_MM-num_grad_MM)/num_grad_MM)))

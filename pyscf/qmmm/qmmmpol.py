@@ -587,9 +587,10 @@ def qmmmpol_grad_for_scf(scf_grad):
                     mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
                     mu = 0.5 * (mu_d + mu_p)
 
-                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
-                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
-                force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
+                force_pol = -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
+                force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
+                force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
+                force[self.base.ommp_obj.polar_mm] += force_pol
 
             force += self.base.ommp_obj.do_polelec_grad()
             force += self.base.ommp_obj.do_fixedelec_grad()
