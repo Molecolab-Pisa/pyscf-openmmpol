@@ -544,21 +544,28 @@ def qmmmpol_grad_for_scf(scf_grad):
 
         def dump_flags(self, verbose=None):
             grad_class.dump_flags(self, verbose)
-            logger.info(self, 'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms, self.base.ommp_obj.pol_atoms))
+            logger.info(self,
+                        'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms,
+                                                                                 self.base.ommp_obj.pol_atoms))
             return self
 
         def MM_atoms_grad(self):
+            """Computes the energy gradients on MM atoms of the system"""
             dm = self.base.make_rdm1()
 
+            # Charges
             ef_QMatMM = self.base.ef_at_static(dm)
             force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
+
             if self.base.ommp_obj.is_amoeba:
+                # Dipoles
                 mu = self.base.ommp_obj.static_dipoles
                 gef_QMatMM = self.base.gef_at_static(dm)
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
 
+                # Quadrupoles
                 quad = self.base.ommp_obj.static_quadrupoles
                 Hef_QMatMM = self.base.Hef_at_static(dm)
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[0,1,2]], quad[:,0]) #xx
@@ -568,7 +575,11 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,7,8]], quad[:,4]) #yz
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
 
+                # Contribution for the multipoles rotation
+                force += self.base.ommp_obj.do_rotation_grad(ef_QMatMM, -gef_QMatMM)
+
             if self.base.do_pol:
+                # Induced dipoles
                 gef_QMatPOL = self.base.gef_at_pol(dm)
                 if not self.base.ommp_obj.is_amoeba:
                     mu = self.base.get_mmpol_induced_dipoles()
@@ -580,14 +591,15 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
                 force += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
 
-            force += self.base.ommp_obj.do_rotation_grad(ef_QMatMM, -gef_QMatMM)
-
             force += self.base.ommp_obj.do_polelec_grad()
             force += self.base.ommp_obj.do_fixedelec_grad()
 
             return -force
 
         def get_hcore(self, mol=None):
+            """Computes QM/MMPol contribution to the derivative
+            of core Hamiltonian"""
+
             if mol is None:
                 mol = self.mol
 
@@ -599,13 +611,10 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             q = self.base.ommp_obj.static_charges
 
-            if mol.cart:
-                intor = 'int3c2e_ip1_cart'
-            else:
-                intor = 'int3c2e_ip1_sph'
-            j3c = df.incore.aux_e2(mol, self.base.fakemol_static, intor, aosym='s1',
-                                   comp=3)
-            g_mm = numpy.einsum('ipqk,k->ipq', j3c, q)
+            ints = df.incore.aux_e2(mol, self.base.fakemol_static,
+                                   intor='int3c2e_ip1')
+            g_mm = numpy.einsum('ipqk,k->ipq', ints, q)
+
             if self.base.ommp_obj.is_amoeba:
                 ints = df.incore.aux_e2(self.base.mol,
                                         self.base.fakemol_static,
@@ -640,6 +649,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[18:27], quad[:,[0,1,3,1,2,4,3,4,5]])
 
             if self.base.do_pol:
+                # Contribution of the converged induced dipoles
                 ints = df.incore.aux_e2(self.base.mol,
                                         self.base.fakemol_pol,
                                         intor='int3c2e_ipip1')
@@ -658,11 +668,15 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_pol[0] = numpy.einsum('ipqk,ki->pq', ints[0:3], mu)
                 g_pol[1] = numpy.einsum('ipqk,ki->pq', ints[3:6], mu)
                 g_pol[2] = numpy.einsum('ipqk,ki->pq', ints[6:9], mu)
+
                 return  g_qm + g_mm + g_pol
             else:
                 return g_qm + g_mm
 
         def grad_nuc(self, mol=None, atmlst=None):
+            """Compute gradients (on QM atoms) due to the interaction of nuclear
+            charges with the MM multipoles and induced dipoles"""
+
             if mol is None:
                 mol = self.mol
 
