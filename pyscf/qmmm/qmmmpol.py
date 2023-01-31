@@ -103,6 +103,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             return self._fakemol_pol
 
+        @property
+        def ommp_qm_helper(self):
+            if not hasattr(self, '_qmhelper'):
+
+                qmat_q = self.mol.atom_charges()
+                qmat_c = self.mol.atom_coords()
+                self._qmhelper = ommp.OMMPQmHelper(qmat_c, qmat_q)
+
+            return self._qmhelper
+
         def v_integrals_ommp(self, pol=False):
             """Electrostatic potential integrals <\mu|r^{-1}|\\nu> = (\mu,\\nu|\delta)
             at coordinates of MM atoms.
@@ -226,80 +236,64 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return Hef[[0,1,2,4,5,8,13,14,17,26]]
 
         @property
-        def ef_nucl_at_pol(self):
-            if not self.do_pol:
-                return numpy.zeros([0,3])
-            else:
-                c = self.ommp_obj.cpol
-                qmat_q = self.mol.atom_charges()
-                qmat_c = self.mol.atom_coords()
-                return ommp.charges_elec_prop(qmat_c,
-                                              qmat_q,
-                                              c,
-                                              False,
-                                              True,
-                                              False,
-                                              False)['E']
+        def V_at_nucl(self):
+            try:
+                return self.ommp_qm_helper.V_m2n
+            except AttributeError:
+                self.ommp_qm_helper.prepare_energy(self.ommp_obj)
+                return self.ommp_qm_helper.V_m2n
 
+        @property
+        def E_at_nucl(self):
+            try:
+                return self.ommp_qm_helper.E_m2n
+            except AttributeError:
+                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                return self.ommp_qm_helper.E_m2n
+
+        @property
+        def ef_nucl_at_pol(self):
+            try:
+                return self.ommp_qm_helper.E_n2p
+            except AttributeError:
+                self.ommp_qm_helper.prepare_energy(self.ommp_obj)
+                return self.ommp_qm_helper.E_n2p
 
         @property
         def gef_nucl_at_pol(self):
             if not self.do_pol:
                 return numpy.zeros([0,6])
             else:
-                c = self.ommp_obj.cpol
-                qmat_q = self.mol.atom_charges()
-                qmat_c = self.mol.atom_coords()
-
-                return -ommp.charges_elec_prop(qmat_c,
-                                               qmat_q,
-                                               c,
-                                               False,
-                                               False,
-                                               True,
-                                               False)['Egrad']
+                try:
+                    return self.ommp_qm_helper.G_n2p
+                except AttributeError:
+                    self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                    return self.ommp_qm_helper.G_n2p
 
         @property
         def ef_nucl_at_static(self):
-            c = self.ommp_obj.cmm
-            qmat_q = self.mol.atom_charges()
-            qmat_c = self.mol.atom_coords()
-
-            return ommp.charges_elec_prop(qmat_c,
-                                          qmat_q,
-                                          c,
-                                          False,
-                                          True,
-                                          False,
-                                          False)['E']
+            try:
+                print(self.ommp_qm_helper.E_n2m)
+                return self.ommp_qm_helper.E_n2m
+            except AttributeError:
+                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                return self.ommp_qm_helper.E_n2m
 
         @property
         def gef_nucl_at_static(self):
-            c = self.ommp_obj.cmm
-            qmat_q = self.mol.atom_charges()
-            qmat_c = self.mol.atom_coords()
-
-            return  -ommp.charges_elec_prop(qmat_c,
-                                            qmat_q,
-                                            c,
-                                            False,
-                                            False,
-                                            True,
-                                            False)['Egrad']
+            try:
+                return self.ommp_qm_helper.G_n2m
+            except AttributeError:
+                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                return self.ommp_qm_helper.G_n2m
 
         @property
         def Hef_nucl_at_static(self):
-            c = self.ommp_obj.cmm
-            qmat_q = self.mol.atom_charges()
-            qmat_c = self.mol.atom_coords()
-            return ommp.charges_elec_prop(qmat_c,
-                                          qmat_q,
-                                          c,
-                                          False,
-                                          False,
-                                          False,
-                                          True)['EHess']
-
+            try:
+                return self.ommp_qm_helper.H_n2m
+            except AttributeError:
+                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                return self.ommp_qm_helper.H_n2m
 
         def ef_at_static(self, dm, exclude_nuclei=False):
             """Computes the electric field generated by the QM system with density dm
@@ -320,10 +314,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                               self.gef_integrals_ommp(),
                               dm, dtype="f8")
             if not exclude_nuclei:
-                gef += self.gef_nucl_at_static
+                gef -= self.gef_nucl_at_static
             return gef
-
-
 
         def Hef_at_static(self, dm, exclude_nuclei=False):
             Hef = numpy.einsum('inmj,nm->ji',
@@ -355,7 +347,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                               self.gef_integrals_ommp(pol=True),
                               dm, dtype="f8")
             if not exclude_nuclei:
-                gef += self.gef_nucl_at_pol
+                gef -= self.gef_nucl_at_pol
             return gef
 
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
@@ -450,8 +442,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             nuc = self.mol.energy_nuc()
 
             # interactions between QM nuclei and MM particles
-            vmm = self.ommp_obj.mm_potential_at_external(self.mol.atom_coords())
-            self.nuc_static_mm = numpy.dot(vmm, self.mol.atom_charges())
+            self.nuc_static_mm = numpy.dot(self.V_at_nucl, self.mol.atom_charges())
             nuc += self.nuc_static_mm
 
             return nuc
@@ -556,7 +547,6 @@ def qmmmpol_grad_for_scf(scf_grad):
             # Charges
             ef_QMatMM = self.base.ef_at_static(dm)
             force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
-
             if self.base.ommp_obj.is_amoeba:
                 # Dipoles
                 mu = self.base.ommp_obj.static_dipoles
@@ -689,7 +679,7 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             g_mm = -numpy.einsum('i,ij->ij',
                                  self.mol.atom_charges(),
-                                 scf_grad.base.ommp_obj.mmpol_field_at_external(self.mol.atom_coords()))
+                                 scf_grad.base.E_at_nucl)
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
 
