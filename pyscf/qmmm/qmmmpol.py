@@ -29,6 +29,7 @@ from pyscf import scf
 from pyscf import mcscf
 from pyscf import grad
 from pyscf.lib import logger
+from pyscf.data.elements import NUC as Symbol2Z
 from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
@@ -109,7 +110,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
                 qmat_q = self.mol.atom_charges()
                 qmat_c = self.mol.atom_coords()
-                self._qmhelper = ommp.OMMPQmHelper(qmat_c, qmat_q)
+                qmat_z = [Symbol2Z[a[0]] for a in self.mol._atom]
+                self._qmhelper = ommp.OMMPQmHelper(qmat_c, qmat_q, qmat_z)
 
             return self._qmhelper
 
