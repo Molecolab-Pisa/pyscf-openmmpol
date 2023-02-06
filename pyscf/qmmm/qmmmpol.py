@@ -466,9 +466,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             """Compute total SCF energy, that also includes the energy
             of the MM part."""
             e_tot = method_class.energy_tot(self, dm, h1e, vhf)
-            e_tot += self.ommp_obj.get_fixedelec_energy()
-            e_tot += self.ommp_obj.get_polelec_energy()
-            # Todo add also bonded / vdw terms
+            e_tot += self.ommp_obj.get_full_energy()
             return e_tot
 
         def gen_response(self, *args, **kwargs):
