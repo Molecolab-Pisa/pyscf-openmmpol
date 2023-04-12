@@ -4,8 +4,6 @@ from pyscf import gto
 from pyscf import qmmm
 import pyopenmmpol as ommp
 
-INPUT_AMOEBA = 'NMA_AMOEBA.mmp'
-
 molstr = \
 ''' C               -1.574500     1.555900     0.071100
  H               -1.450500     0.472400     0.138500
@@ -20,14 +18,20 @@ molstr = \
  H               -0.137400     0.826800    -4.133100
  H               -1.812300     1.445700    -4.118000'''
 
+au2k = 627.50960803
+
 molQM = gto.M(verbose=3,
               atom = molstr,
               basis='3-21g')
 
 myscf = scf.RHF(molQM)
 
-env = ommp.OMMPSystem(INPUT_AMOEBA)
+env = ommp.OMMPSystem('input.xyz', 'amoeba09.prm')
 myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
+myscf_qmmmpol.ommp_qm_helper.init_vdw_prm([133, 134, 134, 134, 127, 128, 129, 130, 131, 132, 132, 132], 'amoeba09.prm')
+print(myscf_qmmmpol.ommp_qm_helper.vdw_energy(env)*au2k)
+print(myscf_qmmmpol.ommp_qm_helper.vdw_geomgrad(env)['QM']*au2k*1.8897161646320724)
+print(env.get_vdw_energy()*au2k)
 myscf_qmmmpol.kernel()
 myscf_grad = myscf_qmmmpol.nuc_grad_method()
 myscf_grad.verbose = 0

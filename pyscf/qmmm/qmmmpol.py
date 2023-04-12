@@ -250,7 +250,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             try:
                 return self.ommp_qm_helper.E_m2n
             except AttributeError:
-                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.E_m2n
 
         @property
@@ -258,7 +258,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             try:
                 return self.ommp_qm_helper.E_n2p
             except AttributeError:
-                self.ommp_qm_helper.prepare_energy(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_ene(self.ommp_obj)
                 return self.ommp_qm_helper.E_n2p
 
         @property
@@ -269,7 +269,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 try:
                     return self.ommp_qm_helper.G_n2p
                 except AttributeError:
-                    self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                    self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                     return self.ommp_qm_helper.G_n2p
 
         @property
@@ -278,7 +278,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 print(self.ommp_qm_helper.E_n2m)
                 return self.ommp_qm_helper.E_n2m
             except AttributeError:
-                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.E_n2m
 
         @property
@@ -286,7 +286,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             try:
                 return self.ommp_qm_helper.G_n2m
             except AttributeError:
-                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.G_n2m
 
         @property
@@ -294,7 +294,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             try:
                 return self.ommp_qm_helper.H_n2m
             except AttributeError:
-                self.ommp_qm_helper.prepare_geomgrad(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.H_n2m
 
         def ef_at_static(self, dm, exclude_nuclei=False):
@@ -566,7 +566,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
 
                 # Contribution for the multipoles rotation
-                force += self.base.ommp_obj.do_rotation_grad(ef_QMatMM, -gef_QMatMM)
+                force += self.base.ommp_obj.rotation_geomgrad(ef_QMatMM, -gef_QMatMM)
 
             if self.base.do_pol:
                 # Induced dipoles
@@ -582,8 +582,8 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
                 force[self.base.ommp_obj.polar_mm] += force_pol
 
-            force += self.base.ommp_obj.do_polelec_grad()
-            force += self.base.ommp_obj.do_fixedelec_grad()
+            force += self.base.ommp_obj.polelec_geomgrad()
+            force += self.base.ommp_obj.fixedelec_geomgrad()
 
             return force
 

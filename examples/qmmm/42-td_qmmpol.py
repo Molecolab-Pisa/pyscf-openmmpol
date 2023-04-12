@@ -27,6 +27,7 @@ molQM = gto.M(verbose=3,
 
 myscf = scf.RHF(molQM)
 
+ommp.set_verbose(3)
 env = ommp.OMMPSystem(INPUT_AMOEBA)
 myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
 
