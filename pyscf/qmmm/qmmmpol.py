@@ -439,13 +439,18 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         def energy_nuc(self):
             """Computes the interaction between nuclei and nuclei and
-            between nuclei and external MM centers"""
+            between nuclei and external MM centers; also compute MM energy
+            terms"""
             # interactions between QM nuclei and QM nuclei
             nuc = self.mol.energy_nuc()
 
             # interactions between QM nuclei and MM particles
             self.nuc_static_mm = numpy.dot(self.V_at_nucl, self.mol.atom_charges())
             nuc += self.nuc_static_mm
+
+            # QM-MM VdW interaction
+            if(self.ommp_qm_helper.use_nonbonded):
+                nuc += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
 
             return nuc
 
@@ -585,6 +590,10 @@ def qmmmpol_grad_for_scf(scf_grad):
             force += self.base.ommp_obj.polelec_geomgrad()
             force += self.base.ommp_obj.fixedelec_geomgrad()
 
+            # QM-MM VdW interaction
+            if(self.base.ommp_qm_helper.use_nonbonded):
+                force += self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['MM']
+
             return force
 
         def get_hcore(self, mol=None):
@@ -666,7 +675,9 @@ def qmmmpol_grad_for_scf(scf_grad):
 
         def grad_nuc(self, mol=None, atmlst=None):
             """Compute gradients (on QM atoms) due to the interaction of nuclear
-            charges with the MM multipoles and induced dipoles"""
+            charges with the MM multipoles and induced dipoles, and from
+            molecular-mechanics like term on QM atoms (eg. VdW interactions with
+            MM atoms)"""
 
             if mol is None:
                 mol = self.mol
@@ -682,6 +693,9 @@ def qmmmpol_grad_for_scf(scf_grad):
                                  scf_grad.base.E_at_nucl)
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
+
+            if(self.base.ommp_qm_helper.use_nonbonded):
+                g_mm += self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['QM']
 
             return g_qm + g_mm
 
