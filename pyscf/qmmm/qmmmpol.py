@@ -105,14 +105,18 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return self._fakemol_pol
 
         @property
-        def ommp_qm_helper(self):
+        def ommp_qm_helper(self, inmol=None):
+            if inmol is None:
+                mol = self.mol
+            else:
+                mol = inmol
             if not hasattr(self, '_qmhelper'):
-
-                qmat_q = self.mol.atom_charges()
-                qmat_c = self.mol.atom_coords()
-                qmat_z = [Symbol2Z[a[0]] for a in self.mol._atom]
+                qmat_q = mol.atom_charges()
+                qmat_c = mol.atom_coords()
+                qmat_z = [Symbol2Z[a[0]] for a in mol._atom]
                 self._qmhelper = ommp.OMMPQmHelper(qmat_c, qmat_q, qmat_z)
-
+            elif not numpy.allclose(mol.atom_coords(), self._qmhelper.cqm):
+                self._qmhelper.update_coord(mol.atom_coords())
             return self._qmhelper
 
         def v_integrals_ommp(self, pol=False):
@@ -242,7 +246,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             try:
                 return self.ommp_qm_helper.V_m2n
             except AttributeError:
-                self.ommp_qm_helper.prepare_energy(self.ommp_obj)
+                self.ommp_qm_helper.prepare_qm_ele_ene(self.ommp_obj)
                 return self.ommp_qm_helper.V_m2n
 
         @property
@@ -448,10 +452,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             self.nuc_static_mm = numpy.dot(self.V_at_nucl, self.mol.atom_charges())
             nuc += self.nuc_static_mm
 
-            # QM-MM VdW interaction
-            if(self.ommp_qm_helper.use_nonbonded):
-                nuc += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
-
             return nuc
 
         def energy_elec(self, dm=None, h1e=None, vhf=None):
@@ -471,7 +471,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             """Compute total SCF energy, that also includes the energy
             of the MM part."""
             e_tot = method_class.energy_tot(self, dm, h1e, vhf)
-            e_tot += self.ommp_obj.get_full_energy()
+
+            e_tot += self.ommp_obj.get_full_bnd_energy()
+            e_tot += self.ommp_obj.get_full_ele_energy()
+            e_tot += self.ommp_obj.get_vdw_energy()
+            # QM-MM VdW interaction
+            if(self.ommp_qm_helper.use_nonbonded):
+                e_tot += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+
             return e_tot
 
         def gen_response(self, *args, **kwargs):
@@ -512,6 +519,37 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 return v
 
             return vind_mmpol
+
+        def energy_analysis(self):
+            # TODO Improve this analysis
+            au2k = 627.50960803
+            smm_ene = self.ommp_obj.get_fixedelec_energy()
+            pmm_ene = self.ommp_obj.get_polelec_energy()
+            scf_ene = self.e_tot - smm_ene - pmm_ene
+            nuc_mm_ene = self.nuc_static_mm
+
+            dm  = self.make_rdm1()
+            ele_mm_ene = numpy.einsum('nm,nm', self.h1e_mmpol, dm)
+            ele_p_ene = self.get_veff(dm=dm).e_mmpol - pmm_ene
+            qm_mm_ene = nuc_mm_ene + ele_mm_ene
+            etot = self.e_tot
+            
+            print("==== QM-MMPOL ENERGY ANALYSIS ====")
+            print("SCF e-tot: {:20.10f} ({:20.10f})".format(scf_ene, scf_ene*au2k))
+            print("MM-MM:     {:20.10f} ({:20.10f})".format(smm_ene, smm_ene*au2k))
+            print("IPD-MM:    {:20.10f} ({:20.10f})".format(pmm_ene, pmm_ene*au2k))
+            print("NUC-MM:    {:20.10f} ({:20.10f})".format(nuc_mm_ene,
+                                                            nuc_mm_ene*au2k))
+            print("ELE-MM:    {:20.10f} ({:20.10f})".format(ele_mm_ene,
+                                                            ele_mm_ene*au2k))
+            print("ELE-IPD:   {:20.10f} ({:20.10f})".format(ele_p_ene,
+                                                            ele_p_ene*au2k))
+            print("QM-MM:     {:20.10f} ({:20.10f})".format(qm_mm_ene,
+                                                            qm_mm_ene*au2k))
+
+            print("E TOT:     {:20.10f} ({:20.10f})".format(etot,
+                                                            etot*au2k))
+            print("==================================")
 
         def nuc_grad_method(self):
             """Return a method for computing nuclear gradients."""
@@ -589,6 +627,8 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             force += self.base.ommp_obj.polelec_geomgrad()
             force += self.base.ommp_obj.fixedelec_geomgrad()
+            force += self.base.ommp_obj.vdw_geomgrad()
+            force += self.base.ommp_obj.full_bnd_geomgrad()
 
             # QM-MM VdW interaction
             if(self.base.ommp_qm_helper.use_nonbonded):
@@ -690,14 +730,16 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             g_mm = -numpy.einsum('i,ij->ij',
                                  self.mol.atom_charges(),
-                                 scf_grad.base.E_at_nucl)
+                                 self.base.E_at_nucl)
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
 
             if(self.base.ommp_qm_helper.use_nonbonded):
-                g_mm += self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['QM']
+                g_vdw = self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['QM']
+            else:
+                g_vdw = numpy.zeros(g_mm.shape)
 
-            return g_qm + g_mm
+            return g_qm + g_mm + g_vdw
 
     return QMMMPOLG(scf_grad)
 
