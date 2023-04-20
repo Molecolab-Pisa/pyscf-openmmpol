@@ -29,10 +29,49 @@ from pyscf import scf
 from pyscf import mcscf
 from pyscf import grad
 from pyscf.lib import logger
-from pyscf.data.elements import NUC as Symbol2Z
+from pyscf.data.elements import NUC as Symbol2Z, _symbol
 from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
+class QMMMPolMole(gto.Mole):
+    def __init__(self, molQM, ommp_obj):
+        self.__dict__.update(molQM.__dict__)
+        self.molQM = molQM
+        self.ommp_obj = ommp_obj
+        self.natm_QM = self.molQM.natm
+        self.natm_MM = self.ommp_obj.mm_atoms
+        self._atom = molQM._atom.copy()
+        for i in range(self.natm_MM):
+            atmstr = "{:s} {:f} {:f} {:f}".format(_symbol(self.ommp_obj.zmm[i]),
+                                                  self.ommp_obj.cmm[i,0],
+                                                  self.ommp_obj.cmm[i,1],
+                                                  self.ommp_obj.cmm[i,2])
+            self._atom += self.molQM.format_atom(atmstr, unit=self.unit)
+
+    @property
+    def natm(self):
+        return self.natm_QM + self.natm_MM
+
+    def set_geom_(self, atoms_or_coords, unit=None, symmetry=None,
+                  inplace=True):
+        if inplace:
+            mol = self
+        else:
+            raise NotImplementedError
+        
+        mol.molQM.set_geom_(atoms_or_coords[:self.natm_QM], unit, symmetry, inplace)
+        mol.ommp_obj.update_coordinates(atoms_or_coords[self.natm_QM:])
+
+        return mol
+
+    def build(self):
+        pass
+
+    def atom_coords(self):
+        full_coords = numpy.empty([self.natm, 3])
+        full_coords[:self.natm_QM] = self.molQM.atom_coords()
+        full_coords[self.natm_QM:] = self.ommp_obj.cmm
+        return full_coords
 
 def add_mmpol(scf_method, ommp_obj):
     if isinstance(ommp_obj, ommp.OMMPSystem):
@@ -63,6 +102,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             self.__dict__.update(scf_method.__dict__)
             self.ommp_obj = ommp_obj
             self._keys.update(['ommp_obj'])
+            self.molQM = self.mol
+            self.mol = QMMMPolMole(self.molQM, self.ommp_obj)
 
         @property
         def do_pol(self):
@@ -107,7 +148,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         @property
         def ommp_qm_helper(self, inmol=None):
             if inmol is None:
-                mol = self.mol
+                mol = self.molQM
             else:
                 mol = inmol
             if not hasattr(self, '_qmhelper'):
@@ -371,6 +412,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 gef -= self.gef_nucl_at_pol
             return gef
 
+        def kernel(self, conv_tol=1e-10, conv_tol_grad=None,
+                dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
+            if dm0 is None:
+                dm = method_class.get_init_guess(self, self.molQM, self.init_guess)
+            else:
+                dm = dm0
+
+            return method_class.kernel(self, dm, **kwargs)
+            
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
             """Function to add the contributions from polarizable sites
             to the Fock matrix. To do so:
@@ -461,7 +511,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             between nuclei and external MM centers; also compute MM energy
             terms"""
             # interactions between QM nuclei and QM nuclei
-            nuc = self.mol.energy_nuc()
+            nuc = self.molQM.energy_nuc()
 
             # interactions between QM nuclei and MM particles (static part)
             # the polarizable part is computed when the QM electric field, which
@@ -604,6 +654,7 @@ def qmmmpol_grad_for_scf(scf_grad):
     class QMMMPOLG(_QMMMPOLGrad, grad_class):
         def __init__(self, scf_grad):
             self.__dict__.update(scf_grad.__dict__)
+            self.scf_obj = scf_grad
 
         def dump_flags(self, verbose=None):
             grad_class.dump_flags(self, verbose)
@@ -611,6 +662,25 @@ def qmmmpol_grad_for_scf(scf_grad):
                         'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms,
                                                                                  self.base.ommp_obj.pol_atoms))
             return self
+
+        def as_scanner(self):
+            class QMMMPOLGrad_Scanner(scf_grad.__class__, lib.GradScanner):
+                def __init__(self, g):
+                    lib.GradScanner.__init__(self, g)
+                    self._grad_method = g
+
+                def __call__(self, mol_or_geom, **kwargs):
+                    scf_grad.base.kernel()
+                    grad = numpy.empty([self.mol.natm, 3])
+                    grad[:self.mol.natm_QM] = self._grad_method.grad_nuc()
+                    grad[self.mol.natm_QM:] = self._grad_method.MM_atoms_grad()
+                    return scf_grad.base.e_tot, grad
+                
+                @property
+                def converged(self):
+                    return True
+
+            return QMMMPOLGrad_Scanner(self)
 
         def MM_atoms_grad(self):
             """Computes the energy gradients on MM atoms of the system"""
@@ -748,7 +818,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             MM atoms)"""
 
             if mol is None:
-                mol = self.mol
+                mol = self.base.molQM
 
             if getattr(grad_class, 'grad_nuc', None):
                 g_qm = grad_class.grad_nuc(self, mol, atmlst)

@@ -21,6 +21,7 @@ from pyscf import data
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad.rhf import GradientsMixin
+from pyscf.data.elements import NUC
 
 
 class Frame:
@@ -202,6 +203,7 @@ class Integrator:
         self.energy_output = None
         self.trajectory_output = None
         self.callback = None
+        self.masses = [NUC[s[0]] for s in self.mol._atom]
 
         self.__dict__.update(kwargs)
 
@@ -313,8 +315,7 @@ class Integrator:
     def compute_kinetic_energy(self):
         '''Compute the kinetic energy of the current frame.'''
         energy = 0
-        for v, m in zip(self.veloc, self.mol.atom_charges()):
-            m = data.elements.COMMON_ISOTOPE_MASSES[m]
+        for v, m in zip(self.veloc, self.masses):
             energy += 0.5 * m * data.nist.AMU2AU * np.linalg.norm(v)**2
 
         return energy
@@ -438,8 +439,7 @@ class VelocityVerlet(Integrator):
             raise RuntimeError('Gradients did not converge!')
 
         a = []
-        for m, g in zip(self.mol.atom_charges(), grad):
-            m = data.elements.COMMON_ISOTOPE_MASSES[m]
+        for m, g in zip(self.masses, grad):
             # a = - \nabla U / m
             a.append(-1 * g / m / data.nist.AMU2AU)
 
