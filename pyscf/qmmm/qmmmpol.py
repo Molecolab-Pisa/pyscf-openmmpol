@@ -242,7 +242,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return Hef[[0,1,2,4,5,8,13,14,17,26]]
 
         @property
-        def V_at_nucl(self):
+        def V_mm_at_nucl(self):
             try:
                 return self.ommp_qm_helper.V_m2n
             except AttributeError:
@@ -250,12 +250,28 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 return self.ommp_qm_helper.V_m2n
 
         @property
-        def E_at_nucl(self):
+        def E_mm_at_nucl(self):
             try:
                 return self.ommp_qm_helper.E_m2n
             except AttributeError:
                 self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.E_m2n
+        
+        @property
+        def V_pol_at_nucl(self):
+            try:
+                return self.ommp_qm_helper.V_p2n
+            except AttributeError:
+                self.ommp_qm_helper.prepare_qm_ele_ene(self.ommp_obj)
+                return self.ommp_qm_helper.V_p2n
+
+        @property
+        def E_pol_at_nucl(self):
+            try:
+                return self.ommp_qm_helper.E_p2n
+            except AttributeError:
+                self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
+                return self.ommp_qm_helper.E_p2n
 
         @property
         def ef_nucl_at_pol(self):
@@ -279,7 +295,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         @property
         def ef_nucl_at_static(self):
             try:
-                print(self.ommp_qm_helper.E_n2m)
                 return self.ommp_qm_helper.E_n2m
             except AttributeError:
                 self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
@@ -448,8 +463,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             # interactions between QM nuclei and QM nuclei
             nuc = self.mol.energy_nuc()
 
-            # interactions between QM nuclei and MM particles
-            self.nuc_static_mm = numpy.dot(self.V_at_nucl, self.mol.atom_charges())
+            # interactions between QM nuclei and MM particles (static part)
+            # the polarizable part is computed when the QM electric field, which
+            # includes nuclei, is contracted with induced dipoles. This is because
+            # when this function is called IPD are still unavailable.
+            self.nuc_static_mm = numpy.dot(self.V_mm_at_nucl, self.mol.atom_charges())
             nuc += self.nuc_static_mm
 
             return nuc
@@ -532,20 +550,31 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             ele_mm_ene = numpy.einsum('nm,nm', self.h1e_mmpol, dm)
             ele_p_ene = self.get_veff(dm=dm).e_mmpol - pmm_ene
             qm_mm_ene = nuc_mm_ene + ele_mm_ene
+            e_vdw = self.ommp_obj.get_vdw_energy()
+            # QM-MM VdW interaction
+            if(self.ommp_qm_helper.use_nonbonded):
+                e_vdw += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+            e_bnd = self.ommp_obj.get_full_bnd_energy()
             etot = self.e_tot
             
             print("==== QM-MMPOL ENERGY ANALYSIS ====")
             print("SCF e-tot: {:20.10f} ({:20.10f})".format(scf_ene, scf_ene*au2k))
             print("MM-MM:     {:20.10f} ({:20.10f})".format(smm_ene, smm_ene*au2k))
-            print("IPD-MM:    {:20.10f} ({:20.10f})".format(pmm_ene, pmm_ene*au2k))
+            print("MM-IPD:    {:20.10f} ({:20.10f})".format(pmm_ene, pmm_ene*au2k))
+            print("QM-MM:     {:20.10f} ({:20.10f})".format(qm_mm_ene,
+                                                            qm_mm_ene*au2k))
+            print("QM-IPD:    {:20.10f} ({:20.10f})".format(ele_p_ene,
+                                                            ele_p_ene*au2k))
             print("NUC-MM:    {:20.10f} ({:20.10f})".format(nuc_mm_ene,
                                                             nuc_mm_ene*au2k))
             print("ELE-MM:    {:20.10f} ({:20.10f})".format(ele_mm_ene,
                                                             ele_mm_ene*au2k))
-            print("ELE-IPD:   {:20.10f} ({:20.10f})".format(ele_p_ene,
-                                                            ele_p_ene*au2k))
-            print("QM-MM:     {:20.10f} ({:20.10f})".format(qm_mm_ene,
-                                                            qm_mm_ene*au2k))
+            print("E QM+EEL:  {:20.10f} ({:20.10f})".format(etot-e_vdw-e_bnd,
+                                                            (etot-e_vdw-e_bnd)*au2k))
+            print("E VDW:     {:20.10f} ({:20.10f})".format(e_vdw,
+                                                            e_vdw*au2k))
+            print("E BND:     {:20.10f} ({:20.10f})".format(e_bnd,
+                                                            e_bnd*au2k))
 
             print("E TOT:     {:20.10f} ({:20.10f})".format(etot,
                                                             etot*au2k))
@@ -610,7 +639,6 @@ def qmmmpol_grad_for_scf(scf_grad):
 
                 # Contribution for the multipoles rotation
                 force += self.base.ommp_obj.rotation_geomgrad(ef_QMatMM, -gef_QMatMM)
-
             if self.base.do_pol:
                 # Induced dipoles
                 gef_QMatPOL = self.base.gef_at_pol(dm)
@@ -730,7 +758,7 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             g_mm = -numpy.einsum('i,ij->ij',
                                  self.mol.atom_charges(),
-                                 self.base.E_at_nucl)
+                                 self.base.E_mm_at_nucl + self.base.E_pol_at_nucl)
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
 
