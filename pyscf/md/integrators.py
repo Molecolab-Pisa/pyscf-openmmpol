@@ -21,7 +21,7 @@ from pyscf import data
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.grad.rhf import GradientsMixin
-from pyscf.data.elements import NUC
+from pyscf.data.elements import NUC, COMMON_ISOTOPE_MASSES
 
 
 class Frame:
@@ -203,7 +203,7 @@ class Integrator:
         self.energy_output = None
         self.trajectory_output = None
         self.callback = None
-        self.masses = [NUC[s[0]] for s in self.mol._atom]
+        self.masses = [COMMON_ISOTOPE_MASSES[NUC[s[0]]] for s in self.mol._atom]
 
         self.__dict__.update(kwargs)
 
