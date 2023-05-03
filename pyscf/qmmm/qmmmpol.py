@@ -82,6 +82,8 @@ class _QMMM_GradScanner(lib.GradScanner):
         self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj)
         self.qm_scanner = gs
         self.base = self.qm_scanner.base
+        self.verbose = self.base.verbose
+        self.stdout = self.base.stdout
 
     def __call__(self, mol_or_geom, **kwargs):
         if isinstance(mol_or_geom, gto.Mole):
