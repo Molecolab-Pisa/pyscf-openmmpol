@@ -40,6 +40,7 @@ class QMMMPolMole(gto.Mole):
         self.ommp_obj = ommp_obj
         self.natm_QM = self.molQM.natm
         self.natm_MM = self.ommp_obj.mm_atoms
+        self.QM_atm_lst = numpy.arange(0, self.natm_QM, 1, dtype=numpy.int64)
         self._atom = molQM._atom.copy()
         for i in range(self.natm_MM):
             atmstr = "{:s} {:f} {:f} {:f}".format(_symbol(self.ommp_obj.zmm[i]),
@@ -65,6 +66,7 @@ class QMMMPolMole(gto.Mole):
         return mol
 
     def build(self):
+        self.molQM.build()
         pass
 
     def atom_coords(self):
@@ -72,6 +74,28 @@ class QMMMPolMole(gto.Mole):
         full_coords[:self.natm_QM] = self.molQM.atom_coords()
         full_coords[self.natm_QM:] = self.ommp_obj.cmm
         return full_coords
+    
+class _QMMM_GradScanner(lib.GradScanner):
+    def __init__(self, gs):
+        self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj)
+        self.qm_scanner = gs
+        self.base = self.qm_scanner.base
+
+    def __call__(self, mol_or_geom, **kwargs):
+        if isinstance(mol_or_geom, gto.Mole):
+            mol = mol_or_geom
+        else:
+            mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+        mf_scanner = self.qm_scanner.base
+
+        e_tot = mf_scanner(mol.molQM)
+        e_tot_qm, de_qm = self.qm_scanner(mol.molQM)
+        
+        de = numpy.zeros((mol.natm, 3))
+        de[mol.QM_atm_lst, :] = de_qm
+
+        return e_tot, de
 
 def add_mmpol(scf_method, ommp_obj):
     if isinstance(ommp_obj, ommp.OMMPSystem):
@@ -98,12 +122,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         """Class overload over an SCF method, to add the contribution
         from QMMMPol environment through OMMP"""
 
-        def __init__(self, scf_method, ommp_obj):
+        def __init__(self, scf_method, ommp_obj, use_qmmm_mol=False):
             self.__dict__.update(scf_method.__dict__)
             self.ommp_obj = ommp_obj
             self._keys.update(['ommp_obj'])
-            self.molQM = self.mol
-            self.mol = QMMMPolMole(self.molQM, self.ommp_obj)
+            self.mol = self.mol
 
         @property
         def do_pol(self):
@@ -148,7 +171,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         @property
         def ommp_qm_helper(self, inmol=None):
             if inmol is None:
-                mol = self.molQM
+                mol = self.mol
             else:
                 mol = inmol
             if not hasattr(self, '_qmhelper'):
@@ -413,9 +436,12 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return gef
 
         def kernel(self, conv_tol=1e-10, conv_tol_grad=None,
-                dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
+                   dump_chk=True, dm0=None, callback=None, 
+                   conv_check=True, **kwargs):
+
+            mol = self.mol
             if dm0 is None:
-                dm = method_class.get_init_guess(self, self.molQM, self.init_guess)
+                dm = method_class.get_init_guess(self, mol, self.init_guess)
             else:
                 dm = dm0
 
@@ -510,8 +536,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             """Computes the interaction between nuclei and nuclei and
             between nuclei and external MM centers; also compute MM energy
             terms"""
+
+            mol = self.mol
             # interactions between QM nuclei and QM nuclei
-            nuc = self.molQM.energy_nuc()
+            nuc = mol.energy_nuc()
 
             # interactions between QM nuclei and MM particles (static part)
             # the polarizable part is computed when the QM electric field, which
@@ -640,6 +668,22 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
     if isinstance(scf_method, scf.hf.SCF):
         return QMMMPOL(scf_method, ommp_obj)
 
+def qmmmpol_grad_as_qmmm_scanner(qmmmpol_grad):
+
+    if not isinstance(qmmmpol_grad, _QMMMPOLGrad):
+        raise TypeError("Only _QMMMPOLGrad objects can be transformed in _QMMM_GradScanner")
+
+    if isinstance(qmmmpol_grad, _QMMM_GradScanner):
+        return qmmmpol_grad
+
+    if not isinstance(qmmmpol_grad, lib.GradScanner):
+        qmmmpol_grad_scanner = qmmmpol_grad.as_scanner()
+    else:
+        qmmmpol_grad_scanner = qmmmpol_grad
+
+    return _QMMM_GradScanner(qmmmpol_grad_scanner)
+
+    
 def qmmmpol_grad_for_scf(scf_grad):
     if getattr(scf_grad.base, 'with_x2c', None):
         raise NotImplementedError('X2C with QM/MM charges')
@@ -662,25 +706,6 @@ def qmmmpol_grad_for_scf(scf_grad):
                         'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms,
                                                                                  self.base.ommp_obj.pol_atoms))
             return self
-
-        def as_scanner(self):
-            class QMMMPOLGrad_Scanner(scf_grad.__class__, lib.GradScanner):
-                def __init__(self, g):
-                    lib.GradScanner.__init__(self, g)
-                    self._grad_method = g
-
-                def __call__(self, mol_or_geom, **kwargs):
-                    scf_grad.base.kernel()
-                    grad = numpy.empty([self.mol.natm, 3])
-                    grad[:self.mol.natm_QM] = self._grad_method.grad_nuc()
-                    grad[self.mol.natm_QM:] = self._grad_method.MM_atoms_grad()
-                    return scf_grad.base.e_tot, grad
-                
-                @property
-                def converged(self):
-                    return True
-
-            return QMMMPOLGrad_Scanner(self)
 
         def MM_atoms_grad(self):
             """Computes the energy gradients on MM atoms of the system"""
@@ -810,6 +835,42 @@ def qmmmpol_grad_for_scf(scf_grad):
                 return  g_qm + g_mm + g_pol
             else:
                 return g_qm + g_mm
+        
+        def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
+            if isinstance(self.mol, QMMMPolMole):
+                return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, self.mol.QM_atm_lst)
+            else:
+                return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, atmlst)
+
+        def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
+            cput0 = (logger.process_clock(), logger.perf_counter())
+            if mo_energy is None: mo_energy = self.base.mo_energy
+            if mo_coeff is None: mo_coeff = self.base.mo_coeff
+            if mo_occ is None: mo_occ = self.base.mo_occ
+            if atmlst is None:
+                atmlst = self.atmlst
+            else:
+                self.atmlst = atmlst
+
+            if self.verbose >= logger.WARN:
+                self.check_sanity()
+            if self.verbose >= logger.INFO:
+                self.dump_flags()
+
+            de_elec_qm = self.grad_elec(mo_energy, mo_coeff, mo_occ, atmlst)
+            de_nuc_qm = self.grad_nuc(atmlst=atmlst)
+            if isinstance(self.mol, QMMMPolMole):
+                self.de = numpy.zeros((self.mol.natm,3))
+                self.de[self.mol.QM_atm_lst,:] = de_nuc_qm + de_elec_qm
+            else:
+                self.de = de_nuc_qm + de_elec_qm
+
+            #if self.mol.symmetry:
+            #    self.de = self.symmetrize(self.de, atmlst)
+            logger.timer(self, 'SCF/MMPol gradients', *cput0)
+            self._finalize()
+            return self.de
+
 
         def grad_nuc(self, mol=None, atmlst=None):
             """Compute gradients (on QM atoms) due to the interaction of nuclear
@@ -818,7 +879,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             MM atoms)"""
 
             if mol is None:
-                mol = self.base.molQM
+                mol = self.mol
 
             if getattr(grad_class, 'grad_nuc', None):
                 g_qm = grad_class.grad_nuc(self, mol, atmlst)
@@ -838,6 +899,29 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_vdw = numpy.zeros(g_mm.shape)
 
             return g_qm + g_mm + g_vdw
+
+        def as_scanner(self):
+            if not isinstance(self.mol, QMMMPolMole):
+                return grad_class.as_scanner(self)
+
+            class QMMMPOL_GradScanner(self.__class__, lib.GradScanner):
+                def __init__(self, g):
+                    lib.GradScanner.__init__(self, g)
+
+                def __call__(self, mol_or_geom, **kwargs):
+                    if isinstance(mol_or_geom, gto.Mole):
+                        mol = mol_or_geom
+                    else:
+                        mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+                    mf_scanner = self.base
+
+                    e_tot = mf_scanner(mol)
+                    de = self.kernel()
+
+                    return e_tot, de
+
+            return QMMMPOL_GradScanner(self)
 
     return QMMMPOLG(scf_grad)
 
