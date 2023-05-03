@@ -17,7 +17,8 @@ ommp.set_verbose(0)
 env = ommp.OMMPSystem('water_opt_MM.xyz', 'amoeba09.prm')
 myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
 myscf_qmmmpol.ommp_qm_helper.init_vdw_prm([39, 40, 40], 'amoeba09.prm')
-qmmm_scanner = qmmm.qmmmpol_grad_as_qmmm_scanner(myscf_qmmmpol.nuc_grad_method())
+myscf_grad = myscf_qmmmpol.nuc_grad_method()
+qmmm_scanner = qmmm.qmmmpol_grad_as_qmmm_scanner(myscf_grad)
 
 au2fs = 0.02418884254
 myintegrator = md.NVE(qmmm_scanner,
