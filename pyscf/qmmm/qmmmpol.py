@@ -84,6 +84,7 @@ class _QMMM_GradScanner(lib.GradScanner):
         self.base = self.qm_scanner.base
         self.verbose = self.base.verbose
         self.stdout = self.base.stdout
+        self.atmlst = self.qm_scanner.atmlst
 
     def __call__(self, mol_or_geom, **kwargs):
         if isinstance(mol_or_geom, gto.Mole):
@@ -101,7 +102,7 @@ class _QMMM_GradScanner(lib.GradScanner):
         
         e_tot = e_tot_qm
         de = numpy.zeros((mol.natm, 3))
-        de[mol.QM_atm_lst, :] = de_qm
+        de[mol.QM_atm_lst[self.atmlst], :] = de_qm
         de[mol.MM_atm_lst, :] = de_mm
 
         return e_tot, de
@@ -725,6 +726,16 @@ def qmmmpol_grad_for_scf(scf_grad):
         def __init__(self, scf_grad):
             self.__dict__.update(scf_grad.__dict__)
             self.scf_obj = scf_grad
+            if self.atmlst is None and numpy.any(self.base.ommp_qm_helper.frozen):
+                self.atmlst = numpy.where(numpy.logical_not(self.base.ommp_qm_helper.frozen))
+            elif self.atmlst is not None:
+                self.base.ommp_qm_helper.set_frozen_atoms(self.atmlst)
+
+            print("DIOCANE", self.atmlst)
+
+        def set_qm_frozen_atoms(self, value):
+            self.atmlst = value
+            self.base.ommp_qm_helper.set_frozen_atoms(self.atmlst)
 
         def dump_flags(self, verbose=None):
             grad_class.dump_flags(self, verbose)
@@ -772,6 +783,9 @@ def qmmmpol_grad_for_scf(scf_grad):
                 force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
                 force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
                 force[self.base.ommp_obj.polar_mm] += force_pol
+
+            # TODO: This should be improved, is highly unefficient!
+            force[self.base.ommp_obj.frozen] = 0.0
 
             force += self.base.ommp_obj.polelec_geomgrad()
             force += self.base.ommp_obj.fixedelec_geomgrad()
@@ -856,14 +870,14 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_pol[0] = numpy.einsum('ipqk,ki->pq', ints[0:3], mu)
                 g_pol[1] = numpy.einsum('ipqk,ki->pq', ints[3:6], mu)
                 g_pol[2] = numpy.einsum('ipqk,ki->pq', ints[6:9], mu)
-
+                
                 return  g_qm + g_mm + g_pol
             else:
                 return g_qm + g_mm
         
         def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
             if isinstance(self.mol, QMMMPolMole):
-                return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, self.mol.QM_atm_lst)
+                return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, self.mol.QM_atm_lst[atmlst])
             else:
                 return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, atmlst)
 
@@ -886,7 +900,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             de_nuc_qm = self.grad_nuc(atmlst=atmlst)
             if isinstance(self.mol, QMMMPolMole):
                 self.de = numpy.zeros((self.mol.natm,3))
-                self.de[self.mol.QM_atm_lst,:] = de_nuc_qm + de_elec_qm
+                self.de[self.mol.QM_atm_lst[atmlst],:] = de_nuc_qm + de_elec_qm
             else:
                 self.de = de_nuc_qm + de_elec_qm
 
@@ -915,13 +929,15 @@ def qmmmpol_grad_for_scf(scf_grad):
             g_mm = -numpy.einsum('i,ij->ij',
                                  self.mol.atom_charges(),
                                  self.base.E_mm_at_nucl + self.base.E_pol_at_nucl)
-            if atmlst is not None:
-                g_mm = g_mm[atmlst]
 
             if(self.base.ommp_qm_helper.use_nonbonded):
                 g_vdw = self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['QM']
             else:
                 g_vdw = numpy.zeros(g_mm.shape)
+            
+            if atmlst is not None:
+                g_mm = g_mm[atmlst]
+                g_vdw = g_vdw[atmlst]
 
             return g_qm + g_mm + g_vdw
 
