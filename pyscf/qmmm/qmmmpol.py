@@ -685,6 +685,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                                                             etot*au2k))
             print("==================================")
 
+        def create_link_atom(self, imm, iqm, ila):
+            """Set ila to be a link atom between iqm and imm. This function
+            changes the coordinates of ila"""
+            idxla = self.ommp_obj.create_link_atom(self.ommp_qm_helper, imm, iqm, ila)
+
+            # Put link atom in the correct position
+            self.mol.set_geom_(self._qmhelper.cqm)
+
         def nuc_grad_method(self):
             """Return a method for computing nuclear gradients."""
             scf_grad = method_class.nuc_grad_method(self)
@@ -730,8 +738,6 @@ def qmmmpol_grad_for_scf(scf_grad):
                 self.atmlst = numpy.where(numpy.logical_not(self.base.ommp_qm_helper.frozen))
             elif self.atmlst is not None:
                 self.base.ommp_qm_helper.set_frozen_atoms(self.atmlst)
-
-            print("DIOCANE", self.atmlst)
 
         def set_qm_frozen_atoms(self, value):
             self.atmlst = value
