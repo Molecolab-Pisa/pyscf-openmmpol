@@ -688,10 +688,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
         def create_link_atom(self, imm, iqm, ila):
             """Set ila to be a link atom between iqm and imm. This function
             changes the coordinates of ila"""
-            idxla = self.ommp_obj.create_link_atom(self.ommp_qm_helper, imm, iqm, ila)
+            self.ommp_qm_helper
+            idxla = self.ommp_obj.create_link_atom(self._qmhelper, imm, iqm, ila)
 
             # Put link atom in the correct position
-            self.mol.set_geom_(self._qmhelper.cqm)
+            self.mol.set_geom_(self._qmhelper.cqm, unit='B')
 
         def nuc_grad_method(self):
             """Return a method for computing nuclear gradients."""
