@@ -685,11 +685,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                                                             etot*au2k))
             print("==================================")
 
-        def create_link_atom(self, imm, iqm, ila):
+        def create_link_atom(self, imm, iqm, ila, prmfile):
             """Set ila to be a link atom between iqm and imm. This function
             changes the coordinates of ila"""
             self.ommp_qm_helper
-            idxla = self.ommp_obj.create_link_atom(self._qmhelper, imm, iqm, ila)
+            idxla = self.ommp_obj.create_link_atom(self._qmhelper, imm, iqm, ila, prmfile)
 
             # Put link atom in the correct position
             self.mol.set_geom_(self._qmhelper.cqm, unit='B')
@@ -735,6 +735,8 @@ def qmmmpol_grad_for_scf(scf_grad):
         def __init__(self, scf_grad):
             self.__dict__.update(scf_grad.__dict__)
             self.scf_obj = scf_grad
+            self.de_mm = None
+
             if self.atmlst is None and numpy.any(self.base.ommp_qm_helper.frozen):
                 self.atmlst = numpy.where(numpy.logical_not(self.base.ommp_qm_helper.frozen))
             elif self.atmlst is not None:
@@ -750,60 +752,6 @@ def qmmmpol_grad_for_scf(scf_grad):
                         'MMPol system with {:d} sites ({:d} polarizable)'.format(self.base.ommp_obj.mm_atoms,
                                                                                  self.base.ommp_obj.pol_atoms))
             return self
-
-        def MM_atoms_grad(self):
-            """Computes the energy gradients on MM atoms of the system"""
-            dm = self.base.make_rdm1()
-            # Charges
-            ef_QMatMM = self.base.ef_at_static(dm)
-            force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
-            if self.base.ommp_obj.is_amoeba:
-                # Dipoles
-                mu = self.base.ommp_obj.static_dipoles
-                gef_QMatMM = self.base.gef_at_static(dm)
-                force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
-                force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
-                force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
-
-                # Quadrupoles
-                quad = self.base.ommp_obj.static_quadrupoles
-                Hef_QMatMM = self.base.Hef_at_static(dm)
-                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[0,1,2]], quad[:,0]) #xx
-                force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,3,4]], quad[:,1]) #xy
-                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[3,6,7]], quad[:,2]) #yy
-                force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[2,4,5]], quad[:,3]) #xz
-                force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[4,7,8]], quad[:,4]) #yz
-                force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
-
-                # Contribution for the multipoles rotation
-                force += self.base.ommp_obj.rotation_geomgrad(ef_QMatMM, -gef_QMatMM)
-            if self.base.do_pol:
-                # Induced dipoles
-                gef_QMatPOL = self.base.gef_at_pol(dm)
-                if not self.base.ommp_obj.is_amoeba:
-                    mu = self.base.get_mmpol_induced_dipoles()
-                else:
-                    mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
-                    mu = 0.5 * (mu_d + mu_p)
-
-                force_pol = -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
-                force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
-                force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
-                force[self.base.ommp_obj.polar_mm] += force_pol
-
-            # TODO: This should be improved, is highly unefficient!
-            force[self.base.ommp_obj.frozen] = 0.0
-
-            force += self.base.ommp_obj.polelec_geomgrad()
-            force += self.base.ommp_obj.fixedelec_geomgrad()
-            force += self.base.ommp_obj.vdw_geomgrad()
-            force += self.base.ommp_obj.full_bnd_geomgrad()
-
-            # QM-MM VdW interaction
-            if(self.base.ommp_qm_helper.use_nonbonded):
-                force += self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['MM']
-
-            return force
 
         def get_hcore(self, mol=None):
             """Computes QM/MMPol contribution to the derivative
@@ -888,7 +836,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             else:
                 return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, atmlst)
 
-        def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
+        def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None, domm=False):
             cput0 = (logger.process_clock(), logger.perf_counter())
             if mo_energy is None: mo_energy = self.base.mo_energy
             if mo_coeff is None: mo_coeff = self.base.mo_coeff
@@ -911,12 +859,74 @@ def qmmmpol_grad_for_scf(scf_grad):
             else:
                 self.de = de_nuc_qm + de_elec_qm
 
+            if self.base.ommp_obj.use_linkatoms:
+                la_contrib = self.base.ommp_qm_helper.linkatom_geomgrad(self.base.ommp_obj, self.de)
+                self.de += la_contrib['QM']
+
+            if domm:
+                dm = self.base.make_rdm1()
+                # Charges
+                ef_QMatMM = self.base.ef_at_static(dm)
+                force = -numpy.einsum('ij,i->ij', ef_QMatMM, self.base.ommp_obj.static_charges)
+                if self.base.ommp_obj.is_amoeba:
+                    # Dipoles
+                    mu = self.base.ommp_obj.static_dipoles
+                    gef_QMatMM = self.base.gef_at_static(dm)
+                    force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[0,1,3]], mu[:,0])
+                    force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[1,2,4]], mu[:,1])
+                    force += -numpy.einsum('ij,i->ij', gef_QMatMM[:,[3,4,5]], mu[:,2])
+
+                    # Quadrupoles
+                    quad = self.base.ommp_obj.static_quadrupoles
+                    Hef_QMatMM = self.base.Hef_at_static(dm)
+                    force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[0,1,2]], quad[:,0]) #xx
+                    force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[1,3,4]], quad[:,1]) #xy
+                    force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[3,6,7]], quad[:,2]) #yy
+                    force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[2,4,5]], quad[:,3]) #xz
+                    force += -2.0*numpy.einsum('ij,i->ij', Hef_QMatMM[:,[4,7,8]], quad[:,4]) #yz
+                    force += -numpy.einsum('ij,i->ij', Hef_QMatMM[:,[5,8,9]], quad[:,5]) #zz
+
+                    # Contribution for the multipoles rotation
+                    force += self.base.ommp_obj.rotation_geomgrad(ef_QMatMM, -gef_QMatMM)
+                if self.base.do_pol:
+                    # Induced dipoles
+                    gef_QMatPOL = self.base.gef_at_pol(dm)
+                    if not self.base.ommp_obj.is_amoeba:
+                        mu = self.base.get_mmpol_induced_dipoles()
+                    else:
+                        mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
+                        mu = 0.5 * (mu_d + mu_p)
+
+                    force_pol = -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[0,1,3]], mu[:,0])
+                    force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
+                    force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
+                    force[self.base.ommp_obj.polar_mm] += force_pol
+
+                # TODO: This should be improved, is highly unefficient!
+                force[self.base.ommp_obj.frozen] = 0.0
+
+                force += self.base.ommp_obj.polelec_geomgrad()
+                force += self.base.ommp_obj.fixedelec_geomgrad()
+                force += self.base.ommp_obj.vdw_geomgrad()
+                force += self.base.ommp_obj.full_bnd_geomgrad()
+
+                # QM-MM VdW interaction
+                if self.base.ommp_qm_helper.use_nonbonded:
+                    force += self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['MM']
+
+                if self.base.ommp_obj.use_linkatoms:
+                    force += la_contrib['MM']
+
+                self.de_mm = force
+
             #if self.mol.symmetry:
             #    self.de = self.symmetrize(self.de, atmlst)
             logger.timer(self, 'SCF/MMPol gradients', *cput0)
             self._finalize()
-            return self.de
-
+            if domm:
+                return self.de, self.de_mm
+            else:
+                return self.de
 
         def grad_nuc(self, mol=None, atmlst=None):
             """Compute gradients (on QM atoms) due to the interaction of nuclear
@@ -968,11 +978,11 @@ def qmmmpol_grad_for_scf(scf_grad):
                     mf_scanner = self.base
 
                     e_tot = mf_scanner(mol)
-                    de = self.kernel()
-
                     if do_mm_grad:
-                        de_mm = self.MM_atoms_grad()
-                    
+                        de, de_mm = self.kernel(domm=True)
+                    else:
+                        de = self.kernel()
+
                     if mm_coords is not None:
                         self.base.ommp_obj.update_coordinates(old_coords)
 
