@@ -34,10 +34,11 @@ from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
 class QMMMPolMole(gto.Mole):
-    def __init__(self, molQM, ommp_obj):
+    def __init__(self, molQM, ommp_obj, ommp_qm_helper):
         self.__dict__.update(molQM.__dict__)
         self.molQM = molQM
         self.ommp_obj = ommp_obj
+        self.ommp_qm_helper = ommp_qm_helper
         self.natm_QM = self.molQM.natm
         self.natm_MM = self.ommp_obj.mm_atoms
         self.QM_atm_lst = numpy.arange(0, self.natm_QM, 1, dtype=numpy.int64)
@@ -62,8 +63,10 @@ class QMMMPolMole(gto.Mole):
         else:
             raise NotImplementedError
         
-        mol.molQM.set_geom_(atoms_or_coords[self.QM_atm_lst], unit, symmetry, inplace)
         mol.ommp_obj.update_coordinates(atoms_or_coords[self.MM_atm_lst])
+        self.ommp_qm_helper.update_coord(atoms_or_coords[self.QM_atm_lst])
+        self.ommp_qm_helper.update_link_atoms_position(self.ommp_obj)
+        mol.molQM.set_geom_(self.ommp_qm_helper.cqm, 'B', inplace)
 
         return mol
 
@@ -79,7 +82,7 @@ class QMMMPolMole(gto.Mole):
     
 class _QMMM_GradScanner(lib.GradScanner):
     def __init__(self, gs):
-        self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj)
+        self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj, gs.base._qmhelper)
         self.qm_scanner = gs
         self.base = self.qm_scanner.base
         self.verbose = self.base.verbose
@@ -919,8 +922,6 @@ def qmmmpol_grad_for_scf(scf_grad):
 
                 self.de_mm = force
 
-            #if self.mol.symmetry:
-            #    self.de = self.symmetrize(self.de, atmlst)
             logger.timer(self, 'SCF/MMPol gradients', *cput0)
             self._finalize()
             if domm:
@@ -973,7 +974,10 @@ def qmmmpol_grad_for_scf(scf_grad):
                         old_coords = self.base.ommp_obj.cmm
                         self.base.ommp_obj.update_coordinates(mm_coords)
                     
-                    self.base.ommp_qm_helper.update_coord(mol.atom_coords())
+                    self.base._qmhelper.update_coord(mol.atom_coords())
+                    if self.base.ommp_obj.use_linkatoms:
+                        self.base._qmhelper.update_link_atoms_position(self.base.ommp_obj)
+                        mol.set_geom_(self.base._qmhelper.cqm, 'B')
                     
                     mf_scanner = self.base
 
