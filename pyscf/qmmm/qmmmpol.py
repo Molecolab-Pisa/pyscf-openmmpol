@@ -868,7 +868,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 self.de = de_nuc_qm + de_elec_qm
 
             if self.base.ommp_obj.use_linkatoms:
-                la_contrib = self.base.ommp_qm_helper.linkatom_geomgrad(self.base.ommp_obj, self.de)
+                la_contrib = self.base.ommp_qm_helper.link_atom_geomgrad(self.base.ommp_obj, self.de)
                 self.de += la_contrib['QM']
 
             if domm:
