@@ -9,7 +9,7 @@ import scipy.constants as pc
 
 basedir = './test_ommp/alanine_cap/'
 INPUT_XYZ = path.join(basedir, 'input.xyz')
-INPUT_PRM = path.join(basedir, '../amoeba09.prm')
+INPUT_PRM = path.join(basedir, '../amoebabio18.prm')
 
 with open(path.join(basedir, 'QM.xyz')) as f:
     molstr = f.read()
