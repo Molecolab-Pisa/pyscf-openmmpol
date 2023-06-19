@@ -186,6 +186,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return self._fakemol_pol
 
         @property
+        def fakeget_mem(self):
+            self._fakeget_mem = self.max_memory - lib.current_memory()[0]
+            return self._fakeget_mem
+
+        @property
         def ommp_qm_helper(self, inmol=None):
             if inmol is None:
                 mol = self.mol
@@ -200,7 +205,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self._qmhelper.update_coord(mol.atom_coords())
             return self._qmhelper
 
-        def v_integrals_ommp(self, pol=False, mol=None):
+        def v_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
             """Electrostatic potential integrals <\mu|r^{-1}|\\nu> = (\mu,\\nu|\delta)
             at coordinates of MM atoms.
             For a reference on how 1-electron integrals can be computed as
@@ -208,9 +213,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             pp. 239-246."""
 
             if pol:
-                fm = self.fakemol_pol
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
+                else:
+                    fm = self.fakemol_pol
             else:
-                fm = self.fakemol_static
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+                else:
+                    fm = self.fakemol_static
             
             if mol is None:
                 mol = self.mol
@@ -218,7 +229,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return df.incore.aux_e2(mol, fm,
                                     intor='int3c2e')
 
-        def ef_integrals_ommp(self, pol=False, mol=None):
+        def ef_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
             """Electric field integrals
             <mu|\hat(E)|nu> = <\mu|\\nabla r^{-1}|\\nu> =
                             = (\\nabla\mu\\nu|\delta) + (\mu\\nabla\\nu|\delta)
@@ -226,9 +237,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             at coordinates of MM atoms."""
 
             if pol:
-                fm = self.fakemol_pol
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
+                else: 
+                    fm = self.fakemol_pol
             else:
-                fm = self.fakemol_static
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+                else: 
+                    fm = self.fakemol_static
             
             if mol is None:
                 mol = self.mol
@@ -238,7 +255,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             Ef += numpy.einsum('imnj->inmj', Ef)
             return Ef
 
-        def gef_integrals_ommp(self, pol=False, mol=None):
+        def gef_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
             """Electric field gradients integrals
             <mu|\hat(G)|nu> = <\mu|\\nabla\\nabla r^{-1}|\\nu> =
                             = ... =
@@ -250,9 +267,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             compressed."""
 
             if pol:
-                fm = self.fakemol_pol
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
+                else:
+                    fm = self.fakemol_pol
             else:
-                fm = self.fakemol_static
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+                else:
+                    fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
@@ -283,7 +306,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return Gef[[0,1,4,2,5,8]]
 
 
-        def Hef_integrals_ommp(self, pol=False, mol=None):
+        def Hef_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
             """Electric field Hessian integrals
             <mu|\hat(G)|nu> = <\mu|\\nabla \\nabla\\nabla r^{-1}|\\nu> =
                             = ... =
@@ -296,9 +319,15 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             compressed."""
 
             if pol:
-                fm = self.fakemol_pol
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
+                else: 
+                    fm = self.fakemol_pol
             else:
-                fm = self.fakemol_static
+                if i0 is not None:
+                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+                else: 
+                    fm = self.fakemol_static
             
             if mol is None:
                 mol = self.mol
@@ -513,8 +542,13 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     current_ipds = (current_ipds_d+current_ipds_p) / 2
 
                 # 3.2. compute the induced dipoles term in the Hamiltonian
-                v_mmpol = -numpy.einsum('inmj,ji->nm',
-                                        self.ef_integrals_ommp(pol=True, mol=mol), current_ipds)
+                nao = mol.nao
+                q = self.ommp_obj.static_charges
+                blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
+                v_mmpol = 0.
+                for i0, i1 in lib.prange(0, current_ipds.size, blksize): 
+                    v_mmpol -= numpy.einsum('inmj,ji->nm', 
+                                            self.ef_integrals_ommp(pol=True, mol=mol, i0=i0, i1=i1), current_ipds[i0:i1])
 
                 # 4. Compute the MMPol contribution to energy
                 if not self.ommp_obj.is_amoeba:
@@ -553,17 +587,25 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 # DO NOT modify post-HF objects to avoid the MM charges applied twice
                 raise RuntimeError('openMMPol cannot be applied here in post-HF methods')
 
+            nao = mol.nao
             q = self.ommp_obj.static_charges
-            self.h1e_mmpol = - numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol), q)
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
+
+            self.h1e_mmpol = 0.0
+            for i0, i1 in lib.prange(0, q.size, blksize):
+                self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
 
             if self.ommp_obj.is_amoeba:
                 mu = self.ommp_obj.static_dipoles
-                self.h1e_mmpol += - numpy.einsum('inmj,ji->nm', self.ef_integrals_ommp(mol=mol), mu)
+                for i0, i1, in lib.prange(0, q.size, blksize): 
+                    self.h1e_mmpol -= numpy.einsum('inmj,ji->nm', self.ef_integrals_ommp(mol=mol, i0=i0, i1=i1), mu[i0:i1])
+
                 quad = self.ommp_obj.static_quadrupoles
 
                 # Off diagonal components are multiplied by two
                 quad[:,[1,3,4]] *= 2.0
-                self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_ommp(mol=mol), quad)
+                for i0, i1 in lib.prange(0, q.size, blksize):
+                    self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_ommp(mol=mol, i0=i0, i1=i1), quad[i0:i1])
             return h1e + self.h1e_mmpol
 
         def energy_nuc(self):
