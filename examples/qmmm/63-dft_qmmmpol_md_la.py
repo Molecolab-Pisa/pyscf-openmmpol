@@ -10,7 +10,7 @@ import json
 
 au2kcalmol = pc.physical_constants['Hartree energy'][0]/(1000.0 * pc.calorie / pc.N_A )
 
-si_file = 'tests/alacap_amoeba_xyz.json'
+si_file = 'tests/tyr2cap_amoeba_xyz.json'
 
 # Try to get QM info directly from JSON
 with open(si_file, 'r') as f:
@@ -29,7 +29,7 @@ molQM = gto.M(verbose=3,
 
 myscf = scf.RHF(molQM)
 
-myscf_qmmmpol = qmmm.add_mmpol(myscf, 'tests/alacap_amoeba_xyz.json')
+myscf_qmmmpol = qmmm.add_mmpol(myscf, si_file)
 myscf_grad = myscf_qmmmpol.nuc_grad_method()
 myscf_grad.verbose = 0
 
