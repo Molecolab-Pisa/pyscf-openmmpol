@@ -6,15 +6,22 @@ from pyscf import qmmm
 import pyopenmmpol as ommp
 import os.path as path
 import scipy.constants as pc
-
-basedir = './test_ommp/alanine_cap/'
-INPUT_XYZ = path.join(basedir, 'input.xyz')
-INPUT_PRM = path.join(basedir, '../amoebabio18.prm')
-
-with open(path.join(basedir, 'QM.xyz')) as f:
-    molstr = f.read()
+import json
 
 au2kcalmol = pc.physical_constants['Hartree energy'][0]/(1000.0 * pc.calorie / pc.N_A )
+
+si_file = 'tests/alacap_amoeba_xyz.json'
+
+# Try to get QM info directly from JSON
+with open(si_file, 'r') as f:
+    si_data = json.loads(f.read())
+
+molstr = ''
+if 'qm' in si_data:
+    atc = si_data['qm']['qm_coords']
+    atn = si_data['qm']['qm_atoms']
+    for z, c in zip(atn, atc):
+        molstr += "{:3s} {:f} {:f} {:f}\n".format(z, c[0], c[1], c[2])
 
 molQM = gto.M(verbose=3,
               atom = molstr,
@@ -22,12 +29,7 @@ molQM = gto.M(verbose=3,
 
 myscf = scf.RHF(molQM)
 
-env = ommp.OMMPSystem(INPUT_XYZ, INPUT_PRM)
-myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
-myscf_qmmmpol.ommp_qm_helper.set_attype([13,14,14,14,14])
-myscf_qmmmpol.ommp_qm_helper.init_vdw_prm(INPUT_PRM)
-myscf_qmmmpol.create_link_atom(2, 1, 5, INPUT_PRM)
-
+myscf_qmmmpol = qmmm.add_mmpol(myscf, 'tests/alacap_amoeba_xyz.json')
 myscf_grad = myscf_qmmmpol.nuc_grad_method()
 myscf_grad.verbose = 0
 
