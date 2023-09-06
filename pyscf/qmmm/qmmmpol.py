@@ -110,12 +110,20 @@ class _QMMM_GradScanner(lib.GradScanner):
 
         return e_tot, de
 
-def add_mmpol(scf_method, ommp_obj):
-    if isinstance(ommp_obj, ommp.OMMPSystem):
-        return qmmmpol_for_scf(scf_method, ommp_obj)
-    else:
-        raise RuntimeError("""Use an instance of OMMPSystem to
-                           initalize the environment.""")
+def add_mmpol(scf_method, smartinput_file):
+    ommp_system, ommp_qmhelper = ommp.smartinput(smartinput_file)
+    scfmmpol = qmmmpol_for_scf(scf_method, ommp_system)
+    if ommp_qmhelper is not None:
+        # Do some checks here...
+        # Atomic number
+        # Coordinates
+        if scf_method.mol.atom_coords().shape != ommp_qmhelper.cqm.shape:
+            logger.warning(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
+            raise RuntimeError("smartinput file and pyscf input should be consistent")
+        if not numpy.allclose(scf_method.mol.atom_coords(), ommp_qmhelper.cqm):
+            logger.warning(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object, those last will be used.")
+        scfmmpol._qmhelper = ommp_qmhelper
+    return scfmmpol
 
 def qmmmpol_for_scf(scf_method, ommp_obj):
     assert(isinstance(ommp_obj, ommp.OMMPSystem))
