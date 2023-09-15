@@ -62,7 +62,7 @@ class QMMMPolMole(gto.Mole):
             mol = self
         else:
             raise NotImplementedError
-        
+
         mol.ommp_obj.update_coordinates(atoms_or_coords[self.MM_atm_lst])
         self.ommp_qm_helper.update_coord(atoms_or_coords[self.QM_atm_lst])
         self.ommp_qm_helper.update_link_atoms_position(self.ommp_obj)
@@ -79,7 +79,7 @@ class QMMMPolMole(gto.Mole):
         full_coords[self.QM_atm_lst] = self.molQM.atom_coords()
         full_coords[self.MM_atm_lst] = self.ommp_obj.cmm
         return full_coords
-    
+
 class _QMMM_GradScanner(lib.GradScanner):
     def __init__(self, gs):
         self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj, gs.base._qmhelper)
@@ -99,10 +99,10 @@ class _QMMM_GradScanner(lib.GradScanner):
         qm_mol = mol.molQM
 
         mf_scanner = self.qm_scanner.base
-        e_tot_qm, de_qm, de_mm = self.qm_scanner(qm_mol, 
+        e_tot_qm, de_qm, de_mm = self.qm_scanner(qm_mol,
                                                  mm_coords=mm_coords,
                                                  do_mm_grad=True)
-        
+
         e_tot = e_tot_qm
         de = numpy.zeros((mol.natm, 3))
         de[mol.QM_atm_lst[self.atmlst], :] = de_qm
@@ -110,18 +110,34 @@ class _QMMM_GradScanner(lib.GradScanner):
 
         return e_tot, de
 
-def add_mmpol(scf_method, smartinput_file):
+def add_mmpol(scf_method, smartinput_file, use_si_qm_coord = None):
     ommp_system, ommp_qmhelper = ommp.smartinput(smartinput_file)
     scfmmpol = qmmmpol_for_scf(scf_method, ommp_system)
+
     if ommp_qmhelper is not None:
         # Do some checks here...
         # Atomic number
         # Coordinates
         if scf_method.mol.atom_coords().shape != ommp_qmhelper.cqm.shape:
-            logger.warning(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
+            logger.info(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
             raise RuntimeError("smartinput file and pyscf input should be consistent")
         if not numpy.allclose(scf_method.mol.atom_coords(), ommp_qmhelper.cqm):
-            logger.warning(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object, those last will be used.")
+            logger.info(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object.")
+            if use_si_qm_coord is None:
+                # Default option: if coordinates are different stop, unless the different coords are on LA that
+                # are handled by OMMP
+                if ommp_system.use_linkatoms:
+                    # TODO Improve this, it should be for link atoms only
+                    scf_method.mol.set_geom_(ommp_qmhelper.cqm, unit='B', inplace=True)
+                    #raise RuntimeError("I Gelati sono buoni ma costano milioni")
+                else:
+                    raise RuntimeError("Coordinates in smartinput file differ from the ones in mol objecti, set a policy with use_si_qm_coord option.")
+            elif use_si_qm_coord == True:
+                scf_method.mol.set_geom_(ommp_qmhelper.cqm, unit='B', inplace=True)
+            elif use_si_qm_coord == False:
+                ommp_qmhelper.update_coord(scf_method.mol.atom_coords())
+            else:
+                raise RuntimeError("use_si_coord should be either Ture, False or None")
         scfmmpol._qmhelper = ommp_qmhelper
     return scfmmpol
 
@@ -219,7 +235,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 fm = self.fakemol_pol
             else:
                 fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -237,7 +253,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 fm = self.fakemol_pol
             else:
                 fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -307,7 +323,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 fm = self.fakemol_pol
             else:
                 fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -357,7 +373,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             except AttributeError:
                 self.ommp_qm_helper.prepare_qm_ele_grd(self.ommp_obj)
                 return self.ommp_qm_helper.E_m2n
-        
+
         @property
         def V_pol_at_nucl(self):
             try:
@@ -473,7 +489,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return gef
 
         def kernel(self, conv_tol=1e-10, conv_tol_grad=None,
-                   dump_chk=True, dm0=None, callback=None, 
+                   dump_chk=True, dm0=None, callback=None,
                    conv_check=True, **kwargs):
 
             mol = self.mol
@@ -483,7 +499,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 dm = dm0
 
             return method_class.kernel(self, dm, **kwargs)
-            
+
         def get_veff(self, mol=None, dm=None, *args, **kwargs):
             """Function to add the contributions from polarizable sites
             to the Fock matrix. To do so:
@@ -677,7 +693,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 e_vdw += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
             e_bnd = self.ommp_obj.get_full_bnd_energy()
             etot = self.e_tot
-            
+
             print("==== QM-MMPOL ENERGY ANALYSIS ====")
             print("SCF e-tot: {:20.10f} ({:20.10f})".format(scf_ene, scf_ene*au2k))
             print("MM-MM:     {:20.10f} ({:20.10f})".format(smm_ene, smm_ene*au2k))
@@ -735,7 +751,7 @@ def qmmmpol_grad_as_qmmm_scanner(qmmmpol_grad):
 
     return _QMMM_GradScanner(qmmmpol_grad_scanner)
 
-    
+
 def qmmmpol_grad_for_scf(scf_grad):
     if getattr(scf_grad.base, 'with_x2c', None):
         raise NotImplementedError('X2C with QM/MM charges')
@@ -841,11 +857,11 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_pol[0] = numpy.einsum('ipqk,ki->pq', ints[0:3], mu)
                 g_pol[1] = numpy.einsum('ipqk,ki->pq', ints[3:6], mu)
                 g_pol[2] = numpy.einsum('ipqk,ki->pq', ints[6:9], mu)
-                
+
                 return  g_qm + g_mm + g_pol
             else:
                 return g_qm + g_mm
-        
+
         def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
             if isinstance(self.mol, QMMMPolMole):
                 return grad_class.grad_elec(self, mo_energy, mo_coeff, mo_occ, self.mol.QM_atm_lst[atmlst])
@@ -965,7 +981,7 @@ def qmmmpol_grad_for_scf(scf_grad):
                 g_vdw = self.base.ommp_qm_helper.vdw_geomgrad(self.base.ommp_obj)['QM']
             else:
                 g_vdw = numpy.zeros(g_mm.shape)
-            
+
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
                 g_vdw = g_vdw[atmlst]
@@ -986,12 +1002,12 @@ def qmmmpol_grad_for_scf(scf_grad):
                     if mm_coords is not None:
                         old_coords = self.base.ommp_obj.cmm
                         self.base.ommp_obj.update_coordinates(mm_coords)
-                    
+
                     self.base._qmhelper.update_coord(mol.atom_coords())
                     if self.base.ommp_obj.use_linkatoms:
                         self.base._qmhelper.update_link_atoms_position(self.base.ommp_obj)
                         mol.set_geom_(self.base._qmhelper.cqm, 'B')
-                    
+
                     mf_scanner = self.base
 
                     e_tot = mf_scanner(mol)
