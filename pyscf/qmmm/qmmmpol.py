@@ -587,6 +587,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     electric field operator to provide the contribution
                     to the fock matrix.
             (4) the contribution to the energy is also computed."""
+            
+            ommp.time_push()
 
             vhf = method_class.get_veff(self, mol, dm, *args, **kwargs)
 
@@ -634,6 +636,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 v_mmpol = numpy.zeros(dm_tot.shape)
                 e_mmpol = 0.0
 
+            ommp.time_pull('PySCF get_vhf')
             return lib.tag_array(vhf, e_mmpol=e_mmpol, v_mmpol=v_mmpol)
 
         def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
@@ -650,14 +653,18 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         def get_hcore(self, mol=None):
             """Compute the core Hamiltonian for MMPol-SCF"""
+            ommp.time_push()
             if mol is None:
                 mol = self.mol
 
+            ommp.time_push()
             if getattr(method_class, 'get_hcore', None):
                 h1e = method_class.get_hcore(self, mol)
             else:
                 # DO NOT modify post-HF objects to avoid the MM charges applied twice
                 raise RuntimeError('openMMPol cannot be applied here in post-HF methods')
+            ommp.time_pull("QM hcore")
+            ommp.time_push()
 
             nao = mol.nao
             q = self.ommp_obj.static_charges
@@ -678,6 +685,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 quad[:,[1,3,4]] *= 2.0
                 for i0, i1 in lib.prange(0, q.size, blksize):
                     self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_ommp(mol=mol, i0=i0, i1=i1), quad[i0:i1])
+            ommp.time_pull("MM hcore")
+            ommp.time_pull("PyScf get_hcore")
             return h1e + self.h1e_mmpol
 
         def energy_nuc(self):
