@@ -106,6 +106,11 @@ class KnownValues(unittest.TestCase):
         uhf.conv_tol = 1e-11
         self.assertAlmostEqual(uhf.scf(), -75.983210886950, 9)
 
+    def test_nr_df_ghf(self):
+        mf = mol.GHF().density_fit(auxbasis='weigend')
+        mf.conv_tol = 1e-11
+        self.assertAlmostEqual(mf.scf(), -75.983210886950, 9)
+
     def test_nr_rhf_no_mem(self):
         rhf = scf.RHF(mol)
         rhf.conv_tol = 1e-11
@@ -328,6 +333,10 @@ class KnownValues(unittest.TestCase):
         mol1.basis = 'ccpvdz'
         mol1.build(0,0)
         self.assertAlmostEqual(mf_scanner(mol1), -76.273052274103648, 7)
+
+        mf = mf_scanner.undo_scanner()
+        mf.run()
+        self.assertAlmostEqual(mf.e_tot, -76.273052274103648, 7)
 
     def test_init(self):
         from pyscf import dft

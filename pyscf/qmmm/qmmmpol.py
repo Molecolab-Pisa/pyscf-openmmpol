@@ -151,7 +151,7 @@ def add_mmpol(scf_method, smartinput_file, use_si_qm_coord = None):
             logger.info(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
             raise RuntimeError("smartinput file and pyscf input should be consistent")
         if not numpy.allclose(scf_method.mol.atom_coords(), ommp_qmhelper.cqm):
-            logger.info(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object.")
+            logger.info(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object, those last will be used.")
             if use_si_qm_coord is None:
                 # Default option: if coordinates are different stop, unless the different coords are on LA that
                 # are handled by OMMP

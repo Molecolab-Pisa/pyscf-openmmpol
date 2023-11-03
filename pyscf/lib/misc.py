@@ -20,7 +20,8 @@
 Some helper functions
 '''
 
-import os, sys
+import os
+import sys
 import warnings
 import tempfile
 import functools
@@ -37,7 +38,42 @@ try:
 except ImportError:
     ThreadPoolExecutor = None
 
-from pyscf.lib import param
+if sys.platform.startswith('linux'):
+    # Avoid too many threads being created in OMP loops.
+    # See issue https://github.com/pyscf/pyscf/issues/317
+    try:
+        from elftools.elf.elffile import ELFFile
+    except ImportError:
+        pass
+    else:
+        def _ldd(so_file):
+            libs = []
+            with open(so_file, 'rb') as f:
+                elf = ELFFile(f)
+                for seg in elf.iter_segments():
+                    if seg.header.p_type != 'PT_DYNAMIC':
+                        continue
+                    for t in seg.iter_tags():
+                        if t.entry.d_tag == 'DT_NEEDED':
+                            libs.append(t.needed)
+                    break
+            return libs
+
+        so_file = os.path.abspath(os.path.join(__file__, '..', 'libnp_helper.so'))
+        for p in _ldd(so_file):
+            if 'mkl' in p and 'thread' in p:
+                warnings.warn(f'PySCF C exteions are incompatible with {p}. '
+                              'MKL_NUM_THREADS is set to 1')
+                os.environ['MKL_NUM_THREADS'] = '1'
+                break
+            elif 'openblasp' in p or 'openblaso' in p:
+                warnings.warn(f'PySCF C exteions are incompatible with {p}. '
+                              'OPENBLAS_NUM_THREADS is set to 1')
+                os.environ['OPENBLAS_NUM_THREADS'] = '1'
+                break
+        del p, so_file, _ldd
+
+from pyscf.lib import parameters as param
 from pyscf import __config__
 
 if h5py.version.version[:4] == '2.2.':
@@ -110,7 +146,7 @@ def num_threads(n=None):
         _np_helper.get_omp_threads.restype = ctypes.c_int
         return _np_helper.get_omp_threads()
 
-class with_omp_threads(object):
+class with_omp_threads:
     '''Using this macro to create a temporary context in which the number of
     OpenMP threads are set to the required value. When the program exits the
     context, the number OpenMP threads will be restored.
@@ -141,7 +177,7 @@ class with_omp_threads(object):
         if self.sys_threads is not None:
             num_threads(self.sys_threads)
 
-class with_multiproc_nproc(object):
+class with_multiproc_nproc:
     '''
     Using this macro to create a temporary context in which the number of
     multi-processing processes are set to the required value.
@@ -422,7 +458,7 @@ def square_mat_in_trilu_indices(n):
     tril2sq[idx[0],idx[1]] = tril2sq[idx[1],idx[0]] = numpy.arange(n*(n+1)//2)
     return tril2sq
 
-class capture_stdout(object):
+class capture_stdout:
     '''redirect all stdout (c printf & python print) into a string
 
     Examples:
@@ -458,7 +494,7 @@ class capture_stdout(object):
             return self.ftmp.file.read()
 ctypes_stdout = capture_stdout
 
-class quite_run(object):
+class quite_run:
     '''capture all stdout (c printf & python print) but output nothing
 
     Examples:
@@ -485,16 +521,22 @@ class quite_run(object):
 # this decorator lets me use methods as both static and instance methods
 # In contrast to classmethod, when obj.function() is called, the first
 # argument is obj in omnimethod rather than obj.__class__ in classmethod
-class omnimethod(object):
+class omnimethod:
     def __init__(self, func):
         self.func = func
 
     def __get__(self, instance, owner):
         return functools.partial(self.func, instance)
 
+def view(obj, cls):
+    '''New view of object with the same attributes.'''
+    new_obj = cls.__new__(cls)
+    new_obj.__dict__.update(obj.__dict__)
+    return new_obj
+
 
 SANITY_CHECK = getattr(__config__, 'SANITY_CHECK', True)
-class StreamObject(object):
+class StreamObject:
     '''For most methods, there are three stream functions to pipe computing stream:
 
     1 ``.set_`` function to update object attributes, eg
@@ -517,7 +559,8 @@ class StreamObject(object):
 
     verbose = 0
     stdout = sys.stdout
-    _keys = set(['verbose', 'stdout'])
+    # Store the keys appeared in the module.  It is used to check misinput attributes
+    _keys = set(['output', 'verbose', 'stdout', 'max_memory'])
 
     def kernel(self, *args, **kwargs):
         '''
@@ -565,13 +608,14 @@ class StreamObject(object):
         if args:
             warnings.warn('method set() only supports keyword arguments.\n'
                           'Arguments %s are ignored.' % args)
-        #if getattr(self, '_keys', None):
-        #    for k,v in kwargs.items():
-        #        setattr(self, k, v)
-        #        if k not in self._keys:
-        #            sys.stderr.write('Warning: %s does not have attribute %s\n'
-        #                             % (self.__class__, k))
-        #else:
+        #keys_ref = set(self._keys)
+        #cls_keys = [cls._keys for cls in self.__class__.__mro__[:-1]
+        #            if hasattr(cls, '_keys')]
+        #keys_ref = keys_ref.union(*cls_keys)
+        #unknown_keys = set(kwargs).difference(keys_ref)
+        #if unknown_keys:
+        #    warnings.warn(f'{self.__class__} does not have attributes {unknown_keys}')
+
         for k,v in kwargs.items():
             setattr(self, k, v)
         return self
@@ -599,24 +643,18 @@ class StreamObject(object):
         return value of method set is the object itself.  This allows a series
         of functions/methods to be executed in pipe.
         '''
-        if (SANITY_CHECK and
-            self.verbose > 0 and  # logger.QUIET
-            getattr(self, '_keys', None)):
-            check_sanity(self, self._keys, self.stdout)
+        if SANITY_CHECK and self.verbose > 0:
+            cls_keys = [cls._keys for cls in self.__class__.__mro__[:-1]
+                        if hasattr(cls, '_keys')]
+            keys_ref = set(self._keys).union(*cls_keys)
+            check_sanity(self, keys_ref, self.stdout)
         return self
 
-    def view(self, cls):
-        '''New view of object with the same attributes.'''
-        obj = cls.__new__(cls)
-        obj.__dict__.update(self.__dict__)
-        return obj
+    view = view
 
-    def add_keys(self, **kwargs):
-        '''Add or update attributes of the object and register these attributes in ._keys'''
-        if kwargs:
-            self.__dict__.update(**kwargs)
-            self._keys = self._keys.union(kwargs.keys())
-        return self
+    def copy(self):
+        '''Returns a shallow copy'''
+        return self.view(self.__class__)
 
 _warn_once_registry = {}
 def check_sanity(obj, keysref, stdout=sys.stdout):
@@ -718,6 +756,12 @@ def module_method(fn, absences=None):
             if a is None: a = self.a
             if b is None: b = self.b
             return fn(a, b)
+
+    This function can be used to replace "staticmethod" when inserting a module
+    method into a class. In a child class, it allows one to call the method of a
+    base class with either "self.__class__.method_name(self, args)" or
+    "self.super().method_name(args)". For method created with "staticmethod",
+    calling "self.super().method_name(args)" is the only option.
     '''
     _locals = {}
     name = fn.__name__
@@ -781,26 +825,86 @@ def invalid_method(name):
     '''
     def fn(obj, *args, **kwargs):
         raise NotImplementedError(f'Method {name} invalid or not implemented')
+    fn.__name__ = name
     return fn
+
+def make_class(bases, name=None, attrs=None):
+    '''
+    Construct a class
+
+    class {name}(*bases):
+        __dict__ = attrs
+    '''
+    if name is None:
+        name = ''.join(getattr(x, '__name_mixin__', x.__name__) for x in bases)
+    if attrs is None:
+        attrs = {}
+    attrs = {**attrs, '__name_mixin__': name}
+    return type(name, bases, attrs)
+
+def set_class(obj, bases, name=None, attrs=None):
+    '''Change the class of an object'''
+    cls = make_class(bases, name, attrs)
+    cls.__module__ = obj.__class__.__module__
+    obj.__class__ = cls
+    return obj
+
+def drop_class(cls, base_cls, name_mixin=None):
+    '''Recursively remove the first matched base_cls from cls MRO
+    '''
+    filter_bases = list(cls.__bases__)
+    force_rebuild = False
+    for i, base in enumerate(cls.__bases__):
+        if base == base_cls:
+            filter_bases[i] = None
+            break
+        elif issubclass(base, base_cls):
+            filter_bases[i] = cls_undressed = drop_class(base, base_cls, name_mixin)
+            force_rebuild = cls_undressed is not None
+            break
+    else:
+        raise RuntimeError(f'class {base_cls} not found in {cls} MRO')
+
+    filter_bases = [x for x in filter_bases if x is not None]
+    if len(filter_bases) < 1:
+        # cls is the singly inherited sub-class of base_cls
+        return None
+    elif not force_rebuild and len(filter_bases) == 1:
+        return filter_bases[0]
+
+    if name_mixin is None:
+        name_mixin = getattr(base_cls, '__name_mixin__', base_cls.__name__)
+    cls_name = cls.__name__.replace(name_mixin, '', 1)
+
+    # rebuild the dynamic_mixin class
+    attrs = {**cls.__dict__, '__name_mixin__': cls_name}
+    cls_undressed = type(cls_name, tuple(filter_bases), attrs)
+    return cls_undressed
+
+def replace_class(cls, old_cls, new_cls):
+    '''Replace the first matched class in MRO
+    '''
+    if cls == old_cls:
+        return new_cls
+
+    bases = list(cls.__bases__)
+    any_match = False
+    for i, base in enumerate(cls.__bases__):
+        if issubclass(base, old_cls):
+            bases[i] = replace_class(base, old_cls, new_cls)
+            any_match = True
+            break
+
+    if not any_match:
+        return cls
+
+    name = cls.__name__.replace(old_cls.__name__, new_cls.__name__)
+    attrs = {**cls.__dict__, '__name_mixin__': name}
+    return type(name, tuple(bases), attrs)
 
 def overwrite_mro(obj, mro):
     '''A hacky function to overwrite the __mro__ attribute'''
-    class HackMRO(type):
-        pass
-# Overwrite type.mro function so that Temp class can use the given mro
-    HackMRO.mro = lambda self: mro
-    #if sys.version_info < (3,):
-    #    class Temp(obj.__class__):
-    #        __metaclass__ = HackMRO
-    #else:
-    #    class Temp(obj.__class__, metaclass=HackMRO):
-    #        pass
-    Temp = HackMRO(obj.__class__.__name__, obj.__class__.__bases__, obj.__dict__)
-    obj = Temp()
-# Delete mro function otherwise all subclass of Temp are not able to
-# resolve the right mro
-    del (HackMRO.mro)
-    return obj
+    raise DeprecationWarning
 
 def izip(*args):
     '''python2 izip == python3 zip'''
@@ -891,7 +995,7 @@ bg = background = bg_thread = background_thread
 bp = bg_process = background_process
 
 ASYNC_IO = getattr(__config__, 'ASYNC_IO', True)
-class call_in_background(object):
+class call_in_background:
     '''Within this macro, function(s) can be executed asynchronously (the
     given functions are executed in background).
 
@@ -1050,8 +1154,18 @@ def ndpointer(*args, **kwargs):
 
 
 # A tag to label the derived Scanner class
-class SinglePointScanner: pass
+class SinglePointScanner:
+    __name_mixin__ = '_Scanner'
+
+    def undo_scanner(self):
+        return view(self, drop_class(self.__class__, SinglePointScanner))
+
 class GradScanner:
+    __name_mixin__ = '_Scanner'
+
+    def undo_scanner(self):
+        return view(self, drop_class(self.__class__, GradScanner))
+
     def __init__(self, g):
         self.__dict__.update(g.__dict__)
         self.base = g.base.as_scanner()
@@ -1068,7 +1182,7 @@ class GradScanner:
         conv = getattr(self.base, 'converged', True)
         return conv
 
-class temporary_env(object):
+class temporary_env:
     '''Within the context of this macro, the attributes of the object are
     temporarily updated. When the program goes out of the scope of the
     context, the original value of each attribute will be restored.
