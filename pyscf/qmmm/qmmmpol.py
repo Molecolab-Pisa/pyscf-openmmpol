@@ -118,10 +118,10 @@ def add_mmpol(scf_method, smartinput_file):
         # Atomic number
         # Coordinates
         if scf_method.mol.atom_coords().shape != ommp_qmhelper.cqm.shape:
-            logger.warning(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
+            logger.info(scfmmpol, "Coordinates in smartinput file have a different shape from the ones in mol object.")
             raise RuntimeError("smartinput file and pyscf input should be consistent")
         if not numpy.allclose(scf_method.mol.atom_coords(), ommp_qmhelper.cqm):
-            logger.warning(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object, those last will be used.")
+            logger.info(scfmmpol, "Coordinates in smartinput file differ from the ones in mol object, those last will be used.")
         scfmmpol._qmhelper = ommp_qmhelper
     return scfmmpol
 

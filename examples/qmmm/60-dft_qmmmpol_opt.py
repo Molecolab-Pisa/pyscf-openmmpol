@@ -6,22 +6,19 @@ import pyopenmmpol as ommp
 from pyscf.geomopt.geometric_solver import optimize
 from os import path
 
-basedir = './test_ommp/four_waters/'
-INPUT_XYZ = path.join(basedir, 'input.xyz')
-INPUT_PRM = path.join(basedir, '../amoeba09.prm')
-
-with open(path.join(basedir, 'QM.xyz')) as f:
-    molstr = f.read()
-
+molstr = ''
+with open('tests/alanine_cap//input_LA_QM_AMOEBA.xyz') as f:
+    for i, l in enumerate(f):
+        if i > 0:
+            molstr += ' '.join(l.split()[1:5])
+            molstr += '\n'
+print(molstr)
 molQM = gto.M(verbose=3,
               atom = molstr,
               basis='3-21g')
 
 myscf = scf.RHF(molQM)
-env = ommp.OMMPSystem(INPUT_XYZ, INPUT_PRM)
-myscf_qmmmpol = qmmm.add_mmpol(myscf, env)
-myscf_qmmmpol.ommp_qm_helper.set_attype([39, 40, 40])
-myscf_qmmmpol.ommp_qm_helper.init_vdw_prm(INPUT_PRM)
+myscf_qmmmpol = qmmm.add_mmpol(myscf, 'tests/alacap_amoeba_xyz.json')
 myscf_grad = myscf_qmmmpol.nuc_grad_method()
 qmmm_scanner = qmmm.qmmmpol_grad_as_qmmm_scanner(myscf_grad)
 
