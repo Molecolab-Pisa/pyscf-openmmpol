@@ -34,23 +34,43 @@ from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
 class QMMMPolMole(gto.Mole):
-    def __init__(self, molQM, ommp_obj, ommp_qm_helper):
+    def __init__(self, molQM, ommp_obj, ommp_qm_helper, remove_frozen_atoms=False):
         self.__dict__.update(molQM.__dict__)
         self.molQM = molQM
         self.ommp_obj = ommp_obj
         self.ommp_qm_helper = ommp_qm_helper
+
+        if remove_frozen_atoms:
+            # Only for MM atoms
+            self.frozenMM = []
+            self.unfrozenMM = []
+            for i, f in enumerate(self.ommp_obj.frozen):
+                if f:
+                    self.frozenMM += [i]
+                else:
+                    self.unfrozenMM += [i]
+            self.frozenMM = numpy.array(self.frozenMM, dtype=numpy.int64)
+            self.unfrozenMM = numpy.array(self.unfrozenMM, dtype=numpy.int64)
+            self.nfrozen = self.frozenMM.shape[0]
+        else:
+            self.frozenMM = numpy.array([], dtype=numpy.int64)
+            self.unfrozenMM = numpy.arange(0, self.ommp_obj.mm_atoms, 1, dtype=numpy.int64)
+            self.nfrozen = 0
+
         self.natm_QM = self.molQM.natm
-        self.natm_MM = self.ommp_obj.mm_atoms
         self.QM_atm_lst = numpy.arange(0, self.natm_QM, 1, dtype=numpy.int64)
-        self.MM_atm_lst = numpy.arange(self.natm_QM, self.natm, dtype=numpy.int64)
+
+        self.natm_MM = self.ommp_obj.mm_atoms - self.nfrozen
+        self.MM_atm_lst = numpy.arange(self.natm_QM, self.natm, 1, dtype=numpy.int64)
 
         self._atom = molQM._atom.copy()
-        for i in range(self.natm_MM):
-            atmstr = "{:s} {:f} {:f} {:f}".format(_symbol(self.ommp_obj.zmm[i]),
-                                                  self.ommp_obj.cmm[i,0],
-                                                  self.ommp_obj.cmm[i,1],
-                                                  self.ommp_obj.cmm[i,2])
-            self._atom += self.molQM.format_atom(atmstr, unit=self.unit)
+        for i in range(self.ommp_obj.mm_atoms):
+            if i not in self.frozenMM:
+                atmstr = "{:s} {:f} {:f} {:f}".format(_symbol(self.ommp_obj.zmm[i]),
+                                                      self.ommp_obj.cmm[i,0],
+                                                      self.ommp_obj.cmm[i,1],
+                                                      self.ommp_obj.cmm[i,2])
+                self._atom += self.molQM.format_atom(atmstr, unit=self.unit)
 
     @property
     def natm(self):
@@ -63,7 +83,12 @@ class QMMMPolMole(gto.Mole):
         else:
             raise NotImplementedError
 
-        mol.ommp_obj.update_coordinates(atoms_or_coords[self.MM_atm_lst])
+        if self.nfrozen > 0:
+            stored_c = mol.ommp_obj.cmm.copy()
+            stored_c[self.unfrozenMM] = atoms_or_coords[self.MM_atm_lst]
+            mol.ommp_obj.update_coordinates(stored_c)
+        else:
+            mol.ommp_obj.update_coordinates(atoms_or_coords[self.MM_atm_lst])
         self.ommp_qm_helper.update_coord(atoms_or_coords[self.QM_atm_lst])
         self.ommp_qm_helper.update_link_atoms_position(self.ommp_obj)
         mol.molQM.set_geom_(self.ommp_qm_helper.cqm, 'B', inplace)
@@ -77,12 +102,12 @@ class QMMMPolMole(gto.Mole):
     def atom_coords(self):
         full_coords = numpy.empty([self.natm, 3])
         full_coords[self.QM_atm_lst] = self.molQM.atom_coords()
-        full_coords[self.MM_atm_lst] = self.ommp_obj.cmm
+        full_coords[self.MM_atm_lst] = self.ommp_obj.cmm[self.unfrozenMM]
         return full_coords
 
 class _QMMM_GradScanner(lib.GradScanner):
-    def __init__(self, gs):
-        self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj, gs.base._qmhelper)
+    def __init__(self, gs, remove_frozen_atoms = False):
+        self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj, gs.base._qmhelper, remove_frozen_atoms)
         self.qm_scanner = gs
         self.base = self.qm_scanner.base
         self.verbose = self.base.verbose
@@ -95,7 +120,11 @@ class _QMMM_GradScanner(lib.GradScanner):
         else:
             mol = self.mol.set_geom_(mol_or_geom, inplace=False)
 
-        mm_coords = mol.atom_coords()[mol.MM_atm_lst,:]
+        if self.mol.nfrozen > 0:
+            mm_coords = self.mol.ommp_obj.cmm.copy()
+            mm_coords[self.mol.unfrozenMM] = mol.atom_coords()[mol.MM_atm_lst,:]
+        else:
+            mm_coords = mol.atom_coords()[mol.MM_atm_lst,:]
         qm_mol = mol.molQM
 
         mf_scanner = self.qm_scanner.base
@@ -106,7 +135,7 @@ class _QMMM_GradScanner(lib.GradScanner):
         e_tot = e_tot_qm
         de = numpy.zeros((mol.natm, 3))
         de[mol.QM_atm_lst[self.atmlst], :] = de_qm
-        de[mol.MM_atm_lst, :] = de_mm
+        de[mol.MM_atm_lst, :] = de_mm[mol.unfrozenMM, :]
 
         return e_tot, de
 
@@ -246,7 +275,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
                 else:
                     fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -263,14 +292,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             if pol:
                 if i0 is not None:
                     fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else: 
+                else:
                     fm = self.fakemol_pol
             else:
                 if i0 is not None:
                     fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else: 
+                else:
                     fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -345,14 +374,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             if pol:
                 if i0 is not None:
                     fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else: 
+                else:
                     fm = self.fakemol_pol
             else:
                 if i0 is not None:
                     fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else: 
+                else:
                     fm = self.fakemol_static
-            
+
             if mol is None:
                 mol = self.mol
 
@@ -570,8 +599,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 q = self.ommp_obj.static_charges
                 blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
                 v_mmpol = 0.
-                for i0, i1 in lib.prange(0, current_ipds.size, blksize): 
-                    v_mmpol -= numpy.einsum('inmj,ji->nm', 
+                for i0, i1 in lib.prange(0, current_ipds.size, blksize):
+                    v_mmpol -= numpy.einsum('inmj,ji->nm',
                                             self.ef_integrals_ommp(pol=True, mol=mol, i0=i0, i1=i1), current_ipds[i0:i1])
 
                 # 4. Compute the MMPol contribution to energy
@@ -621,7 +650,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             if self.ommp_obj.is_amoeba:
                 mu = self.ommp_obj.static_dipoles
-                for i0, i1, in lib.prange(0, q.size, blksize): 
+                for i0, i1, in lib.prange(0, q.size, blksize):
                     self.h1e_mmpol -= numpy.einsum('inmj,ji->nm', self.ef_integrals_ommp(mol=mol, i0=i0, i1=i1), mu[i0:i1])
 
                 quad = self.ommp_obj.static_quadrupoles
@@ -778,7 +807,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
     if isinstance(scf_method, scf.hf.SCF):
         return QMMMPOL(scf_method, ommp_obj)
 
-def qmmmpol_grad_as_qmmm_scanner(qmmmpol_grad):
+def qmmmpol_grad_as_qmmm_scanner(qmmmpol_grad, remove_frozen_atoms=False):
 
     if not isinstance(qmmmpol_grad, _QMMMPOLGrad):
         raise TypeError("Only _QMMMPOLGrad objects can be transformed in _QMMM_GradScanner")
@@ -791,7 +820,7 @@ def qmmmpol_grad_as_qmmm_scanner(qmmmpol_grad):
     else:
         qmmmpol_grad_scanner = qmmmpol_grad
 
-    return _QMMM_GradScanner(qmmmpol_grad_scanner)
+    return _QMMM_GradScanner(qmmmpol_grad_scanner, remove_frozen_atoms)
 
 
 def qmmmpol_grad_for_scf(scf_grad):
@@ -975,9 +1004,6 @@ def qmmmpol_grad_for_scf(scf_grad):
                     force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[1,2,4]], mu[:,1])
                     force_pol += -numpy.einsum('ij,i->ij', gef_QMatPOL[:,[3,4,5]], mu[:,2])
                     force[self.base.ommp_obj.polar_mm] += force_pol
-
-                # TODO: This should be improved, is highly unefficient!
-                force[self.base.ommp_obj.frozen] = 0.0
 
                 force += self.base.ommp_obj.polelec_geomgrad()
                 force += self.base.ommp_obj.fixedelec_geomgrad()
