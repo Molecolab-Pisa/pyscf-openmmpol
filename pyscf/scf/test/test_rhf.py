@@ -16,7 +16,6 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
-import copy
 import numpy
 import unittest
 import tempfile
@@ -239,6 +238,13 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(lib.fp(dm), 2.01095497354225, 5)
         self.assertAlmostEqual(numpy.einsum('ij,ji->', dm, mol1.intor('int1e_ovlp')), 20, 9)
 
+    def test_init_guess_huckel(self):
+        dm = scf.hf.RHF(mol).get_init_guess(mol, key='mod_huckel')
+        self.assertAlmostEqual(lib.fp(dm), 3.233072986208057, 5)
+
+        dm = scf.ROHF(mol).init_guess_by_mod_huckel()
+        self.assertAlmostEqual(lib.fp(dm[0]), 3.233072986208057/2, 5)
+
     def test_1e(self):
         mf = scf.rohf.HF1e(mol)
         self.assertAlmostEqual(mf.scf(), -23.867818585778764, 9)
@@ -321,11 +327,11 @@ class KnownValues(unittest.TestCase):
         popandchg, dip = mf1.analyze(with_meta_lowdin=False)
         self.assertAlmostEqual(numpy.linalg.norm(popandchg[0]), 3.2031790129016922, 6)
 
-        mf1 = copy.copy(n2mf)
+        mf1 = n2mf.copy()
         (pop, chg), dip = n2mf.analyze()
         self.assertAlmostEqual(numpy.linalg.norm(pop), 4.5467414321488357, 6)
         self.assertAlmostEqual(numpy.linalg.norm(dip), 0, 9)
-        mf1 = copy.copy(n2mf)
+        mf1 = n2mf.copy()
         mf1.mo_coeff = numpy.array(n2mf.mo_coeff)
         popandchg, dip = mf1.analyze(with_meta_lowdin=False)
         self.assertAlmostEqual(numpy.linalg.norm(popandchg[0]), 3.8893148995392353, 6)
@@ -590,8 +596,7 @@ H     0    0.757    0.587'''
                 [0, 2, 0, 0, 0, 1, 2, 0, 1, 2, 0, 0, 2, 0, 2, 0, 0, 0, 0, 2]))
 
         mf1 = scf.RHF(mol).set(verbose=0).view(scf.hf_symm.ROHF)
-        self.assertTrue(numpy.allclose(mf1.get_occ(energy, mo_coeff),
-                [0 ,2 ,0 ,0 ,0 ,0 ,2 ,0 ,0 ,0 ,0 ,0 ,2 ,0 ,2 ,0 ,0 ,0 ,0 ,2]))
+        self.assertRaises(RuntimeError, mf1.get_occ, energy, mo_coeff)
 
     def test_get_occ_extreme_case(self):
         mol = gto.M(atom='He', verbose=7, output='/dev/null')
@@ -741,7 +746,7 @@ H     0    0.757    0.587'''
         self.assertAlmostEqual(abs(f1 + f1.T).max(), 0, 12)
 
     def test_check_convergence(self):
-        mf1 = copy.copy(n2mf)
+        mf1 = n2mf.copy()
         mf1.diis = False
         count = [0]
         def check_convergence(envs):
@@ -775,7 +780,7 @@ H     0    0.757    0.587'''
         self.assertEqual(irrep_nelec['A1g'], 6)
         self.assertEqual(irrep_nelec['E1ux'], 2)
         self.assertEqual(irrep_nelec['E1uy'], 2)
-        n2_rhf = copy.copy(n2mf)
+        n2_rhf = n2mf.copy()
         n2_rhf.irrep_nelec = irrep_nelec
         n2_rhf.irrep_nelec['A2g'] = 0
         n2_rhf.irrep_nelec['E2gx'] = 2
@@ -906,14 +911,17 @@ H     0    0.757    0.587'''
         q = opt.q_cond
         self.assertTrue(mol.intor_by_shell('int2e', shls).ravel()[0] < q[i,j] * q[k,l])
 
+    @unittest.skip('Numerical accuracy issue in libcint 5.2')
+    def test_schwarz_condition_numerical_error(self):
         mol = gto.M(atom='''
                     H    0   0   0
                     H    0   0   6
                     ''', unit='B',
                     basis = [[0, (.6, 1)], [0, (1e3, 1)]])
         omega = 5.
-        with mol.with_short_range_coulomb(5.):
+        with mol.with_short_range_coulomb(omega):
             mf = scf.RHF(mol)
+            # sr eri cannot reach the accuracy 1e-18
             mf.direct_scf_tol = 1e-18
             opt = mf.init_direct_scf()
             shls = i, j, k, l = 2, 0, 1, 1

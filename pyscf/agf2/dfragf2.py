@@ -258,6 +258,8 @@ class DFRAGF2(ragf2.RAGF2):
             Auxiliaries of the Green's function
     '''
 
+    _keys = set(['_with_df', 'allow_lowmem_build'])
+
     def __init__(self, mf, frozen=None, mo_energy=None, mo_coeff=None, mo_occ=None):
         ragf2.RAGF2.__init__(self, mf, frozen=frozen, mo_energy=mo_energy,
                              mo_coeff=mo_coeff, mo_occ=mo_occ)
@@ -269,8 +271,6 @@ class DFRAGF2(ragf2.RAGF2):
             self.with_df.auxbasis = df.make_auxbasis(mf.mol, mp2fit=True)
 
         self.allow_lowmem_build = True
-
-        self._keys.update(['_with_df', 'allow_lowmem_build'])
 
     build_se_part = build_se_part
     get_jk = get_jk
@@ -306,8 +306,7 @@ class DF(df.DF):
         if stop is None: stop = self.get_naoaux()
         if step is None: step = self.blockdim
 
-        for p0, p1 in mpi_helper.prange(start, stop, step):
-            yield p0, p1
+        yield from mpi_helper.prange(start, stop, step)
 
 
 class _ChemistsERIs(ragf2._ChemistsERIs):

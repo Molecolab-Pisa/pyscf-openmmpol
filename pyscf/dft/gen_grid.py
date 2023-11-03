@@ -211,7 +211,7 @@ def stratmann(g):
 
 def original_becke(g):
     '''Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033'''
-#    This funciton has been optimized in the C code VXCgen_grid
+#    This function has been optimized in the C code VXCgen_grid
 #    g = (3 - g**2) * g * .5
 #    g = (3 - g**2) * g * .5
 #    g = (3 - g**2) * g * .5
@@ -260,13 +260,6 @@ def gen_atomic_grids(mol, atom_grid={}, radi_method=radi.gauss_chebyshev,
                 angs = [n_ang] * n_rad
             logger.debug(mol, 'atom %s rad-grids = %d, ang-grids = %s',
                          symb, n_rad, angs)
-
-            ang_grids = {}
-            for n in sorted(set(angs)):
-                grid = numpy.empty((n,4))
-                libdft.MakeAngularGrid(grid.ctypes.data_as(ctypes.c_void_p),
-                                       ctypes.c_int(n))
-                ang_grids[n] = grid
 
             angs = numpy.array(angs)
             coords = []
@@ -392,7 +385,7 @@ def make_mask(mol, coords, relativity=0, shls_slice=None, cutoff=CUTOFF,
 
 def arg_group_grids(mol, coords, box_size=GROUP_BOX_SIZE):
     '''
-    Parition the entire space into small boxes according to the input box_size.
+    Partition the entire space into small boxes according to the input box_size.
     Group the grids against these boxes.
     '''
     atom_coords = mol.atom_coords()
@@ -502,6 +495,12 @@ class Grids(lib.StreamObject):
     alignment = ALIGNMENT_UNIT
     cutoff = CUTOFF
 
+    _keys = set((
+        'atomic_radii', 'radii_adjust', 'radi_method', 'becke_scheme',
+        'prune', 'level', 'alignment', 'cutoff', 'mol', 'symmetry',
+        'atom_grid', 'non0tab', 'screen_index', 'coords', 'weights',
+    ))
+
     def __init__(self, mol):
         self.mol = mol
         self.stdout = mol.stdout
@@ -517,10 +516,6 @@ class Grids(lib.StreamObject):
         self.screen_index = None
         self.coords  = None
         self.weights = None
-        self._keys = set(self.__dict__.keys()).update([
-            'atomic_radii', 'radii_adjust', 'radi_method', 'becke_scheme',
-            'prune', 'level', 'alignment', 'cutoff',
-        ])
 
     @property
     def size(self):
@@ -565,7 +560,7 @@ class Grids(lib.StreamObject):
             logger.debug(self, 'Padding %d grids', padding)
             if padding > 0:
                 self.coords = numpy.vstack(
-                    [self.coords, numpy.repeat([[1e4]*3], padding, axis=0)])
+                    [self.coords, numpy.repeat([[1e-4]*3], padding, axis=0)])
                 self.weights = numpy.hstack([self.weights, numpy.zeros(padding)])
 
         if with_non0tab:
@@ -625,7 +620,7 @@ class Grids(lib.StreamObject):
                 logger.debug(self, 'prune_by_density_: %d padding grids', padding)
                 if padding > 0:
                     self.coords = numpy.vstack(
-                        [self.coords, numpy.repeat([[1e4]*3], padding, axis=0)])
+                        [self.coords, numpy.repeat([[1e-4]*3], padding, axis=0)])
                     self.weights = numpy.hstack([self.weights, numpy.zeros(padding)])
             self.non0tab = self.make_mask(mol, self.coords)
             self.screen_index = self.non0tab

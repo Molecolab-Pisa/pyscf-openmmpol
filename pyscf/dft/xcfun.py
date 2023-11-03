@@ -22,12 +22,13 @@ XC functional, the interface to xcfun (https://github.com/dftlibs/xcfun)
 U. Ekstrom et al, J. Chem. Theory Comput., 6, 1971
 '''
 
-import copy
 import ctypes
+from functools import lru_cache
 import math
 import numpy
 from pyscf import lib
 from pyscf.dft.xc.utils import remove_dup, format_xc_code
+from pyscf import __config__
 
 _itrf = lib.load_library('libxcfun_itrf')
 
@@ -144,12 +145,12 @@ XC = XC_CODES = {
 'PBE0'          : '.25*HF + .75*PBEX + PBEC',  # Perdew-Burke-Ernzerhof, JCP, 110, 6158
 'PBE1PBE'       : 'PBE0',
 'PBEH'          : 'PBE0',
-'B3P86'         : '.2*HF + .08*SLATER + .72*B88 + .81*P86C + .19*VWN5C',
+'B3P86'         : 'B3P86G',
 'B3P86G'        : '.2*HF + .08*SLATER + .72*B88 + .81*P86C + .19*VWN3C',
-'B3PW91'        : '.2*HF + .08*SLATER + .72*B88 + .81*PW91C + .19*VWN5C',
-'B3PW91G'       : '.2*HF + .08*SLATER + .72*B88 + .81*PW91C + .19*VWN3C',
-# Note, use VWN5 for B3LYP. It is different to the libxc default B3LYP
-'B3LYP'         : 'B3LYP5',
+'B3P86V5'       : '.2*HF + .08*SLATER + .72*B88 + .81*P86C + .19*VWN5C',
+'B3PW91'        : '.2*HF + .08*SLATER + .72*B88 + .81*PW91C + .19*PW92C',
+# Note, B3LYP uses VWN3 https://doi.org/10.1016/S0009-2614(97)00207-8.
+'B3LYP'         : 'B3LYPG',
 'B3LYP5'        : '.2*HF + .08*SLATER + .72*B88 + .81*LYP + .19*VWN5C',
 'B3LYPG'        : '.2*HF + .08*SLATER + .72*B88 + .81*LYP + .19*VWN3C', # B3LYP-VWN3 used by Gaussian and libxc
 #'O3LYP'         : '.1161*HF + .9262*SLATER + .8133*OPTXCORR + .81*LYP + .19*VWN5C',  # Mol. Phys. 99 607
@@ -158,8 +159,9 @@ XC = XC_CODES = {
 #'O3LYP'         : '.1161*HF + .9262*SLATER + 1.164393477*OPTXCORR + .81*LYP + .19*VWN5C', #1.164393477 = .8133*1.43169
 #'O3LYPG'        : '.1161*HF + .9262*SLATER + 1.164393477*OPTXCORR + .81*LYP + .19*VWN3C',
 'O3LYP'         : '.1161*HF + 0.071006917*SLATER + .8133*OPTX, .81*LYP + .19*VWN5',  # libxc implementation
-'X3LYP'         : '.218*HF + .073*SLATER + 0.542385*B88 + .166615*PW91X + .871*LYP + .129*VWN5C',  # Xu, PNAS, 101, 2673
+'X3LYP'         : 'X3LYPG',
 'X3LYPG'        : '.218*HF + .073*SLATER + 0.542385*B88 + .166615*PW91X + .871*LYP + .129*VWN3C',
+'X3LYP5'        : '.218*HF + .073*SLATER + 0.542385*B88 + .166615*PW91X + .871*LYP + .129*VWN5C',  # Xu, PNAS, 101, 2673
 # Range-separated-hybrid functional: (alpha+beta)*SR_HF(0.33) + alpha*LR_HF(0.33)
 # Note default mu of xcfun is 0.4. It can cause discrepancy for CAMB3LYP
 'CAMB3LYP'      : '0.19*SR_HF(0.33) + 0.65*LR_HF(0.33) + 0.46*BECKESRX + 0.35*B88 + VWN5C*0.19 + LYPC*0.81',
@@ -171,6 +173,10 @@ XC = XC_CODES = {
 'TPSSH'         : '0.1*HF + 0.9*TPSSX + TPSSC',
 'TF'            : 'TFK',
 }
+
+if getattr(__config__, 'B3LYP_WITH_VWN5', False):
+    XC_CODES['B3P86'] = 'B3P86V5'
+    XC_CODES['B3LYP'] = 'B3LYP5'
 
 # Some XC functionals have conventional name, like M06-L means M06-L for X
 # functional and M06-L for C functional, PBE mean PBE-X plus PBE-C. If the
@@ -247,28 +253,28 @@ RSH_XC = set(('CAMB3LYP',))
 MAX_DERIV_ORDER = 3
 
 VV10_XC = {
-    'B97M_V'    : [6.0, 0.01],
-    'WB97M_V'   : [6.0, 0.01],
-    'WB97X_V'   : [6.0, 0.01],
-    'VV10'      : [5.9, 0.0093],
-    'LC_VV10'   : [6.3, 0.0089],
-    'REVSCAN_VV10': [9.8, 0.0093],
-    'SCAN_RVV10'  : [15.7, 0.0093],
-    'SCAN_VV10'   : [14.0, 0.0093],
-    'SCANL_RVV10' : [15.7, 0.0093],
-    'SCANL_VV10'  : [14.0, 0.0093],
+    'B97M_V'    : (6.0, 0.01),
+    'WB97M_V'   : (6.0, 0.01),
+    'WB97X_V'   : (6.0, 0.01),
+    'VV10'      : (5.9, 0.0093),
+    'LC_VV10'   : (6.3, 0.0089),
+    'REVSCAN_VV10': (9.8, 0.0093),
+    'SCAN_RVV10'  : (15.7, 0.0093),
+    'SCAN_VV10'   : (14.0, 0.0093),
+    'SCANL_RVV10' : (15.7, 0.0093),
+    'SCANL_VV10'  : (14.0, 0.0093),
 }
 VV10_XC.update([(key.replace('_', ''), val) for key, val in VV10_XC.items()])
 
+@lru_cache(100)
 def xc_type(xc_code):
     if xc_code is None:
         return None
     elif isinstance(xc_code, str):
-        if is_nlc(xc_code):
-            return 'NLC'
         hyb, fn_facs = parse_xc(xc_code)
     else:
         fn_facs = [(xc_code, 1)]  # mimic fn_facs
+
     if not fn_facs:
         return 'HF'
     elif all(_itrf.XCFUN_xc_type(ctypes.c_int(xid)) == 0 for xid, val in fn_facs):
@@ -277,7 +283,7 @@ def xc_type(xc_code):
         return 'MGGA'
     else:
         # all((xid in GGA_IDS or xid in LDA_IDS for xid, val in fn_fns)):
-        # include hybrid_xc
+        # include hybrid_xc and NLC
         return 'GGA'
 
 def is_lda(xc_code):
@@ -288,7 +294,7 @@ def is_hybrid_xc(xc_code):
         xc_code = xc_code.replace(' ','').upper()
         return ('HF' in xc_code or xc_code in HYB_XC or
                 hybrid_coeff(xc_code) != 0)
-    elif isinstance(xc_code, int):
+    elif numpy.issubdtype(type(xc_code), numpy.integer):
         return False
     else:
         return any((is_hybrid_xc(x) for x in xc_code))
@@ -299,27 +305,28 @@ def is_meta_gga(xc_code):
 def is_gga(xc_code):
     return xc_type(xc_code) == 'GGA'
 
+# Assign a temporary Id to VV10 functionals. parse_xc function needs them to
+# parse NLC functionals
+XC_CODES.update([(key, 5000+i) for i, key in enumerate(VV10_XC)])
+VV10_XC.update([(5000+i, VV10_XC[key]) for i, key in enumerate(VV10_XC)])
+
 def is_nlc(xc_code):
-    return '__VV10' in xc_code.upper()
+    fn_facs = parse_xc(xc_code)[1]
+    return any(xid >= 5000 for xid, c in fn_facs)
 
 def nlc_coeff(xc_code):
     '''Get NLC coefficients
     '''
     xc_code = xc_code.upper()
-
-    nlc_part = None
     if '__VV10' in xc_code:
-        xc_code, nlc_part = xc_code.split('__', 1)
+        raise RuntimeError('Deprecated notation for NLC functional.')
 
-    if xc_code in VV10_XC:
-        return VV10_XC[xc_code]
-    elif nlc_part is not None:
-        # Use VV10 NLC parameters by default for the general case
-        return VV10_XC[nlc_part]
-    else:
-        raise NotImplementedError(
-            '%s does not have NLC part. Available functionals are %s' %
-            (xc_code, ', '.join(VV10_XC.keys())))
+    fn_facs = parse_xc(xc_code)[1]
+    nlc_pars = []
+    for xid, fac in fn_facs:
+        if xid >= 5000:
+            nlc_pars.append((VV10_XC[xid], fac))
+    return tuple(nlc_pars)
 
 def rsh_coeff(xc_code):
     '''Get Range-separated-hybrid coefficients
@@ -330,7 +337,6 @@ def rsh_coeff(xc_code):
     return omega, alpha, beta
 
 def max_deriv_order(xc_code):
-    hyb, fn_facs = parse_xc(xc_code)
     return MAX_DERIV_ORDER
 
 def test_deriv_order(xc_code, deriv, raise_error=False):
@@ -341,8 +347,6 @@ def test_deriv_order(xc_code, deriv, raise_error=False):
     return support
 
 def hybrid_coeff(xc_code, spin=0):
-    if is_nlc(xc_code):
-        return 0
     hyb, fn_facs = parse_xc(xc_code)
     return hyb[0]
 
@@ -350,6 +354,7 @@ def parse_xc_name(xc_name):
     fn_facs = parse_xc(xc_name)[1]
     return fn_facs[0][0], fn_facs[1][0]
 
+@lru_cache(100)
 def parse_xc(description):
     r'''Rules to input functional description:
 
@@ -402,9 +407,9 @@ def parse_xc(description):
     '''
     hyb = [0, 0, 0]  # hybrid, alpha, omega
     if description is None:
-        return hyb, []
-    elif isinstance(description, int):
-        return hyb, [(description, 1.)]
+        return tuple(hyb), ()
+    elif numpy.issubdtype(type(description), numpy.integer):
+        return tuple(hyb), ((description, 1.),)
     elif not isinstance(description, str): #isinstance(description, (tuple,list)):
         return parse_xc('%s,%s' % tuple(description))
 
@@ -430,7 +435,7 @@ def parse_xc(description):
                 fac, key = token.split('*')
                 if fac[0].isalpha():
                     fac, key = key, fac
-                fac = sign * float(fac)
+                fac = sign * float(fac.replace('_', '-'))
             else:
                 fac, key = sign, token
 
@@ -494,14 +499,15 @@ def parse_xc(description):
             parse_token(token, 'XC', search_xc_alias=True)
     if hyb[2] == 0: # No omega is assigned. LR_HF is 0 for normal Coulomb operator
         hyb[1] = 0
-    return hyb, remove_dup(fn_facs)
+    return tuple(hyb), tuple(remove_dup(fn_facs))
 
 _NAME_WITH_DASH = {'SR-HF'  : 'SR_HF',
                    'LR-HF'  : 'LR_HF',
                    'M06-L'  : 'M06L',
                    'M05-2X' : 'M052X',
                    'M06-HF' : 'M06HF',
-                   'M06-2X' : 'M062X',}
+                   'M06-2X' : 'M062X',
+                   'E-'     : 'E_'} # For scientific notation
 
 
 def eval_xc(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None):
@@ -512,7 +518,7 @@ def eval_xc(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=Non
     '''
     hyb, fn_facs = parse_xc(xc_code)
     if omega is not None:
-        hyb[2] = float(omega)
+        hyb = hyb[:2] + (float(omega),)
     return _eval_xc(hyb, fn_facs, rho, spin, relativity, deriv, verbose)
 
 XC_D0 = 0
@@ -1073,5 +1079,5 @@ def define_xc_(ni, description, xctype='LDA', hyb=0, rsh=(0,0,0)):
     return ni
 
 def define_xc(ni, description, xctype='LDA', hyb=0, rsh=(0,0,0)):
-    return define_xc_(copy.copy(ni), description, xctype, hyb, rsh)
+    return define_xc_(ni.copy(), description, xctype, hyb, rsh)
 define_xc.__doc__ = define_xc_.__doc__
