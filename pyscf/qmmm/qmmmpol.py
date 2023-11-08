@@ -399,18 +399,19 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 for j0, j1 in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
                     Gef[j0:j1] = numpy.einsum('inmj,nm->ji',
-                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1') + df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1'),
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1') + \
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1'),
                                               dm)
                 Gef[:,[1,2,5]] += Gef[:,[3,6,7]]
                 Gef[:,[0,4,8]] *= 2
                 if quadrupoles is None:
-                    return Gef
+                    return Gef[:,[0,1,4,2,5,8]]
                 else:
                     return numpy.einsum('ij,ij->', Gef, quadrupoles)
             return None
 
 
-        def Hef_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
+        def Hef_integrals_ommp(self, pol=False, mol=None, dm=None):
             """Electric field Hessian integrals
             <mu|\hat(G)|nu> = <\mu|\\nabla \\nabla\\nabla r^{-1}|\\nu> =
                             = ... =
@@ -423,18 +424,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             compressed."""
 
             if pol:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else:
-                    fm = self.fakemol_pol
+                fm = self.fakemol_pol
             else:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else:
-                    fm = self.fakemol_static
+                fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
+
+            nao = mol.nao
+            nmmp = fm.natm
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
 
             # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
             #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
@@ -449,23 +448,47 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             #                15
             #                19
             #                21
-            nnni_j = df.incore.aux_e2(mol, fm,
-                                      intor='int3c2e_ipipip1')
-            nni_nj = df.incore.aux_e2(mol, fm,
-                                      intor='int3c2e_ipipvip1')
-            Hef = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
-                  3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
 
-            # Compress and make symmetric
-            Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
-            Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
-            Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
-            Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
-            Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
-            Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
-            Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+            if dm is None:
+                nnni_j = df.incore.aux_e2(mol, fm,
+                                          intor='int3c2e_ipipip1')
+                nni_nj = df.incore.aux_e2(mol, fm,
+                                          intor='int3c2e_ipipvip1')
+                Hef = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
+                      3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
 
-            return Hef[[0,1,2,4,5,8,13,14,17,26]]
+                # Compress and make symmetric
+                Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
+                Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
+                Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
+                Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
+                Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
+                Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
+                Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+
+                #TODO Transpose
+                return Hef[[0,1,2,4,5,8,13,14,17,26]]
+            else:
+                Hef = numpy.empty([nmmp,27])
+
+                for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    Hef[j0:j1] = numpy.einsum('inmj,nm->ji',
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipipip1') + \
+                                              3 * df.incore.aux_e2(mol, _fm, intor='int3c2e_ipipvip1'),
+                                              dm)
+
+                # Compress and make symmetric
+                Hef[:,1] =  (Hef[:,1] +  Hef[:,3] +  Hef[:,9]) / 3
+                Hef[:,2] =  (Hef[:,2] +  Hef[:,6] +  Hef[:,18]) / 3
+                Hef[:,4] =  (Hef[:,4] +  Hef[:,10] + Hef[:,12]) / 3
+                Hef[:,5] =  (Hef[:,5] +  Hef[:,7] +  Hef[:,11] + Hef[:,15] + Hef[:,19] + Hef[:,21]) / 6
+                Hef[:,8] =  (Hef[:,8] +  Hef[:,20] + Hef[:,24]) / 3
+                Hef[:,14] = (Hef[:,14] + Hef[:,16] + Hef[:,22]) / 3
+                Hef[:,17] = (Hef[:,17] + Hef[:,23] + Hef[:,25]) / 3
+                return Hef[:,[0,1,2,4,5,8,13,14,17,26]] * 2.
+            return None
+
 
         @property
         def V_mm_at_nucl(self):
@@ -561,14 +584,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return gef
 
         def Hef_at_static(self, dm, mol=None, exclude_nuclei=False):
-            nao = mol.nao
-            q = self.ommp_obj.static_charges
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
-            Hef = numpy.zeros((q.size,10))
-            for i0, i1 in lib.prange(0, q.size, blksize):
-              Hef[i0:i1] = numpy.einsum('inmj,nm->ji',
-                                        self.Hef_integrals_ommp(mol=mol, i0=i0, i1=i1),
-                                        dm, dtype="f8")
+            Hef = self.Hef_integrals_ommp(mol=mol, dm=dm)
             if not exclude_nuclei:
                 Hef += self.Hef_nucl_at_static
             return Hef
@@ -616,8 +632,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     to the fock matrix.
             (4) the contribution to the energy is also computed."""
 
-            ommp.time_push()
-
             vhf = method_class.get_veff(self, mol, dm, *args, **kwargs)
             is_uhf = isinstance(self, scf.uhf.UHF)
             if is_uhf:
@@ -658,7 +672,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 v_mmpol = numpy.zeros(dm_tot.shape)
                 e_mmpol = 0.0
 
-            ommp.time_pull('PySCF get_vhf')
             return lib.tag_array(vhf, e_mmpol=e_mmpol, v_mmpol=v_mmpol)
 
         def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
