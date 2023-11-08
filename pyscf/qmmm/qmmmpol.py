@@ -750,12 +750,25 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             e_tot = method_class.energy_tot(self, dm, h1e, vhf)
 
-            e_tot += self.ommp_obj.get_full_bnd_energy()
-            e_tot += self.ommp_obj.get_full_ele_energy()
-            e_tot += self.ommp_obj.get_vdw_energy()
-            # QM-MM VdW interaction
-            if(self.ommp_qm_helper.use_nonbonded):
-                e_tot += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+            if hasattr(self, 'e_mmpol_crdhash'):
+                tmp_hash = hash(self.mol.atom_coords().tostring()+\
+                                self.ommp_obj.cmm.tostring())
+                if tmp_hash != self.e_mmpol_crdhash:
+                    delattr(self, e_mmpol_crdhash)
+                    delattr(self, e_mmpol)
+
+            if not hasattr(self, 'e_mmpol'):
+                self.e_mmpol = self.ommp_obj.get_full_bnd_energy()
+                self.e_mmpol += self.ommp_obj.get_full_ele_energy()
+                self.e_mmpol += self.ommp_obj.get_vdw_energy()
+                # QM-MM VdW interaction
+                if(self.ommp_qm_helper.use_nonbonded):
+                    self.e_mmpol += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+                # Hash the coordinates of the system to avoid useless calculations
+                # of energy components.
+                self.e_mmpol_crdhash = hash(self.mol.atom_coords().tostring()+\
+                                            self.ommp_obj.cmm.tostring())
+            e_tot += self.e_mmpol
 
             return e_tot
 
