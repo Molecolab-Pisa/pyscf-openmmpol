@@ -258,7 +258,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self._qmhelper.update_coord(mol.atom_coords())
             return self._qmhelper
 
-        def v_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
+        def v_integrals_ommp(self, pol=False, mol=None,
+                             dm=None, charges=None):
             """Electrostatic potential integrals <\mu|r^{-1}|\\nu> = (\mu,\\nu|\delta)
             at coordinates of MM atoms.
             For a reference on how 1-electron integrals can be computed as
@@ -266,21 +267,42 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             pp. 239-246."""
 
             if pol:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else:
-                    fm = self.fakemol_pol
+                fm = self.fakemol_pol
             else:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else:
-                    fm = self.fakemol_static
+                fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
 
-            return df.incore.aux_e2(mol, fm,
-                                    intor='int3c2e')
+            nao = mol.nao
+            nmmp = fm.natm
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+
+            if charges is None and dm is None:
+                return df.incore.aux_e2(mol, fm,
+                                        intor='int3c2e')
+            elif charges is not None and dm is None:
+                V_dc = numpy.zeros([nao,nao])
+                for j0, j1, in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    V_dc -= numpy.einsum('mnj,j->mn',
+                                          df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                          charges[j0:j1])
+                return V_dc
+            elif dm is not None:
+                V_dc = numpy.empty([nmmp])
+
+                for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    V_dc[j0:j1] = numpy.einsum('mnj,mn->j',
+                                                df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                                dm)
+                if charges is None:
+                    return V_dc
+                else:
+                    return -numpy.einsum('j,j->', V_dc, charges)
+            return None
+
 
         def ef_integrals_ommp(self, pol=False, mol=None,
                               dm=None, dipoles=None):
@@ -702,8 +724,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
 
             self.h1e_mmpol = 0.0
-            for i0, i1 in lib.prange(0, q.size, blksize):
-                self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            #for i0, i1 in lib.prange(0, q.size, blksize):
+            #    self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            self.h1e_mmpol += self.v_integrals_ommp(mol=mol, charges=q)
 
             if self.ommp_obj.is_amoeba:
                 self.h1e_mmpol += self.ef_integrals_ommp(mol=mol, dipoles=self.ommp_obj.static_dipoles)
