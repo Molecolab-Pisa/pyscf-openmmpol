@@ -258,7 +258,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self._qmhelper.update_coord(mol.atom_coords())
             return self._qmhelper
 
-        def v_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
+        def v_integrals_ommp(self, pol=False, mol=None,
+                             dm=None, charges=None):
             """Electrostatic potential integrals <\mu|r^{-1}|\\nu> = (\mu,\\nu|\delta)
             at coordinates of MM atoms.
             For a reference on how 1-electron integrals can be computed as
@@ -266,21 +267,42 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             pp. 239-246."""
 
             if pol:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else:
-                    fm = self.fakemol_pol
+                fm = self.fakemol_pol
             else:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else:
-                    fm = self.fakemol_static
+                fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
 
-            return df.incore.aux_e2(mol, fm,
-                                    intor='int3c2e')
+            nao = mol.nao
+            nmmp = fm.natm
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+
+            if charges is None and dm is None:
+                return df.incore.aux_e2(mol, fm,
+                                        intor='int3c2e')
+            elif charges is not None and dm is None:
+                V_dc = numpy.zeros([nao,nao])
+                for j0, j1, in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    V_dc -= numpy.einsum('mnj,j->mn',
+                                          df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                          charges[j0:j1])
+                return V_dc
+            elif dm is not None:
+                V_dc = numpy.empty([nmmp])
+
+                for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    V_dc[j0:j1] = numpy.einsum('mnj,mn->j',
+                                                df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                                dm)
+                if charges is None:
+                    return V_dc
+                else:
+                    return -numpy.einsum('j,j->', V_dc, charges)
+            return None
+
 
         def ef_integrals_ommp(self, pol=False, mol=None,
                               dm=None, dipoles=None):
@@ -331,8 +353,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return None
 
         def gef_integrals_ommp(self, pol=False, mol=None,
-                               i0=None, i1=None,
-                               dm=None, dipoles=None):
+                               dm=None, quadrupoles=None):
             """Electric field gradients integrals
             <mu|\hat(G)|nu> = <\mu|\\nabla\\nabla r^{-1}|\\nu> =
                             = ... =
@@ -344,18 +365,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             compressed."""
 
             if pol:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else:
-                    fm = self.fakemol_pol
+                fm = self.fakemol_pol
             else:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else:
-                    fm = self.fakemol_static
+                fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
+
+            nao = mol.nao
+            nmmp = fm.natm
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
 
             # PySCF order for field gradient tensor
             #  0  1  2  3  4  5  6  7  8
@@ -369,21 +388,52 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             #  0  1  2  3  4  5
             # xx xy yy xz yz zz
 
-            nni_j = df.incore.aux_e2(mol, fm,
-                                    intor='int3c2e_ipip1')
+            if quadrupoles is None and dm is None:
+                nni_j = df.incore.aux_e2(mol, fm,
+                                        intor='int3c2e_ipip1')
 
-            ni_nj = df.incore.aux_e2(mol, fm,
-                                    intor='int3c2e_ipvip1')
+                ni_nj = df.incore.aux_e2(mol, fm,
+                                        intor='int3c2e_ipvip1')
 
-            Gef = nni_j + numpy.einsum('inmj->imnj', nni_j) + 2 * ni_nj
+                Gef = nni_j + numpy.einsum('inmj->imnj', nni_j) + 2 * ni_nj
 
-            Gef[[1,2,5]] += Gef[[3,6,7]]
-            Gef[[1,2,5]] /= 2.0
+                Gef[[1,2,5]] += Gef[[3,6,7]]
+                Gef[[1,2,5]] /= 2.0
+                #TODO TRANSPOSE
+                return Gef[[0,1,4,2,5,8]]
 
-            return Gef[[0,1,4,2,5,8]]
+            elif quadrupoles is not None and dm is None:
+                Gef = numpy.zeros([nao, nao])
+                for j0, j1, in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    tmp_quad = numpy.zeros([j1-j0,9])
+                    tmp_quad[:,[1,2,5]] = quadrupoles[j0:j1,[1,3,4]]
+                    tmp_quad[:,[3,6,7]] = tmp_quad[:,[1,2,5]]
+                    tmp_quad[:,[0,4,8]] = quadrupoles[j0:j1,[0,2,5]]
+                    nni_j = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1')
+                    Gef += numpy.einsum('inmj,ji->nm', nni_j, tmp_quad)
+                    ni_nj = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1')
+                    Gef += numpy.einsum('inmj,ji->nm', ni_nj, tmp_quad)
+                return Gef + Gef.T
+            elif dm is not None:
+                Gef = numpy.empty([nmmp,9])
+
+                for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    Gef[j0:j1] = numpy.einsum('inmj,nm->ji',
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1') + \
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1'),
+                                              dm)
+                Gef[:,[1,2,5]] += Gef[:,[3,6,7]]
+                Gef[:,[0,4,8]] *= 2
+                if quadrupoles is None:
+                    return Gef[:,[0,1,4,2,5,8]]
+                else:
+                    return numpy.einsum('ij,ij->', Gef, quadrupoles)
+            return None
 
 
-        def Hef_integrals_ommp(self, pol=False, mol=None, i0=None, i1=None):
+        def Hef_integrals_ommp(self, pol=False, mol=None, dm=None):
             """Electric field Hessian integrals
             <mu|\hat(G)|nu> = <\mu|\\nabla \\nabla\\nabla r^{-1}|\\nu> =
                             = ... =
@@ -396,18 +446,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             compressed."""
 
             if pol:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cpol[i0:i1])
-                else:
-                    fm = self.fakemol_pol
+                fm = self.fakemol_pol
             else:
-                if i0 is not None:
-                    fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
-                else:
-                    fm = self.fakemol_static
+                fm = self.fakemol_static
 
             if mol is None:
                 mol = self.mol
+
+            nao = mol.nao
+            nmmp = fm.natm
+            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
 
             # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
             #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
@@ -422,23 +470,47 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             #                15
             #                19
             #                21
-            nnni_j = df.incore.aux_e2(mol, fm,
-                                      intor='int3c2e_ipipip1')
-            nni_nj = df.incore.aux_e2(mol, fm,
-                                      intor='int3c2e_ipipvip1')
-            Hef = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
-                  3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
 
-            # Compress and make symmetric
-            Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
-            Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
-            Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
-            Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
-            Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
-            Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
-            Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+            if dm is None:
+                nnni_j = df.incore.aux_e2(mol, fm,
+                                          intor='int3c2e_ipipip1')
+                nni_nj = df.incore.aux_e2(mol, fm,
+                                          intor='int3c2e_ipipvip1')
+                Hef = nnni_j + numpy.einsum('inmj->imnj', nnni_j) + \
+                      3 * (nni_nj + numpy.einsum('inmj->imnj', nni_nj))
 
-            return Hef[[0,1,2,4,5,8,13,14,17,26]]
+                # Compress and make symmetric
+                Hef[1] = (Hef[1] + Hef[3] + Hef[9]) / 3
+                Hef[2] = (Hef[2] + Hef[6] + Hef[18]) / 3
+                Hef[4] = (Hef[4] + Hef[10] + Hef[12]) / 3
+                Hef[5] = (Hef[5] + Hef[7] + Hef[11] + Hef[15] + Hef[19] + Hef[21]) / 6
+                Hef[8] = (Hef[8] + Hef[20] + Hef[24]) / 3
+                Hef[14] = (Hef[14] + Hef[16] + Hef[22]) / 3
+                Hef[17] = (Hef[17] + Hef[23] + Hef[25]) / 3
+
+                #TODO Transpose
+                return Hef[[0,1,2,4,5,8,13,14,17,26]]
+            else:
+                Hef = numpy.empty([nmmp,27])
+
+                for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    Hef[j0:j1] = numpy.einsum('inmj,nm->ji',
+                                              df.incore.aux_e2(mol, _fm, intor='int3c2e_ipipip1') + \
+                                              3 * df.incore.aux_e2(mol, _fm, intor='int3c2e_ipipvip1'),
+                                              dm)
+
+                # Compress and make symmetric
+                Hef[:,1] =  (Hef[:,1] +  Hef[:,3] +  Hef[:,9]) / 3
+                Hef[:,2] =  (Hef[:,2] +  Hef[:,6] +  Hef[:,18]) / 3
+                Hef[:,4] =  (Hef[:,4] +  Hef[:,10] + Hef[:,12]) / 3
+                Hef[:,5] =  (Hef[:,5] +  Hef[:,7] +  Hef[:,11] + Hef[:,15] + Hef[:,19] + Hef[:,21]) / 6
+                Hef[:,8] =  (Hef[:,8] +  Hef[:,20] + Hef[:,24]) / 3
+                Hef[:,14] = (Hef[:,14] + Hef[:,16] + Hef[:,22]) / 3
+                Hef[:,17] = (Hef[:,17] + Hef[:,23] + Hef[:,25]) / 3
+                return Hef[:,[0,1,2,4,5,8,13,14,17,26]] * 2.
+            return None
+
 
         @property
         def V_mm_at_nucl(self):
@@ -528,27 +600,13 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             """Compute the electric field generated by the QM system with density dm
             at fixed electrostatic sites"""
 
-            nao = mol.nao
-            q = self.ommp_obj.static_charges
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
-            gef = numpy.zeros((q.size,6))
-            for i0, i1 in lib.prange(0, q.size, blksize):
-              gef[i0:i1] = numpy.einsum('inmj,nm->ji',
-                                        self.gef_integrals_ommp(mol=mol, i0=i0, i1=i1),
-                                        dm, dtype="f8")
+            gef = self.gef_integrals_ommp(mol=mol, dm=dm)
             if not exclude_nuclei:
                 gef -= self.gef_nucl_at_static
             return gef
 
         def Hef_at_static(self, dm, mol=None, exclude_nuclei=False):
-            nao = mol.nao
-            q = self.ommp_obj.static_charges
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
-            Hef = numpy.zeros((q.size,10))
-            for i0, i1 in lib.prange(0, q.size, blksize):
-              Hef[i0:i1] = numpy.einsum('inmj,nm->ji',
-                                        self.Hef_integrals_ommp(mol=mol, i0=i0, i1=i1),
-                                        dm, dtype="f8")
+            Hef = self.Hef_integrals_ommp(mol=mol, dm=dm)
             if not exclude_nuclei:
                 Hef += self.Hef_nucl_at_static
             return Hef
@@ -568,14 +626,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             """Compute the electric field generated by the QM system with density dm
             at fixed electrostatic sites"""
 
-            nao = mol.nao
-            npol = self.ommp_obj.cpol.shape[0]
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
-            gef = numpy.zeros((npol,6))
-            for i0, i1 in lib.prange(0, npol, blksize):
-              gef[i0:i1] = numpy.einsum('inmj,nm->ji',
-                                        self.gef_integrals_ommp(pol=True, mol=mol, i0=i0, i1=i1),
-                                        dm, dtype="f8")
+            gef = self.gef_integrals_ommp(pol=True, dm=dm)
             if not exclude_nuclei:
                 gef -= self.gef_nucl_at_pol
             return gef
@@ -602,8 +653,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     electric field operator to provide the contribution
                     to the fock matrix.
             (4) the contribution to the energy is also computed."""
-
-            ommp.time_push()
 
             vhf = method_class.get_veff(self, mol, dm, *args, **kwargs)
             is_uhf = isinstance(self, scf.uhf.UHF)
@@ -645,7 +694,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 v_mmpol = numpy.zeros(dm_tot.shape)
                 e_mmpol = 0.0
 
-            ommp.time_pull('PySCF get_vhf')
             return lib.tag_array(vhf, e_mmpol=e_mmpol, v_mmpol=v_mmpol)
 
         def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
@@ -676,18 +724,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
 
             self.h1e_mmpol = 0.0
-            for i0, i1 in lib.prange(0, q.size, blksize):
-                self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            #for i0, i1 in lib.prange(0, q.size, blksize):
+            #    self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            self.h1e_mmpol += self.v_integrals_ommp(mol=mol, charges=q)
 
             if self.ommp_obj.is_amoeba:
                 self.h1e_mmpol += self.ef_integrals_ommp(mol=mol, dipoles=self.ommp_obj.static_dipoles)
 
                 quad = self.ommp_obj.static_quadrupoles
 
-                # Off diagonal components are multiplied by two
-                quad[:,[1,3,4]] *= 2.0
-                for i0, i1 in lib.prange(0, q.size, blksize):
-                    self.h1e_mmpol += -numpy.einsum('inmj,ji->nm', self.gef_integrals_ommp(mol=mol, i0=i0, i1=i1), quad[i0:i1])
+                self.h1e_mmpol -= self.gef_integrals_ommp(mol=mol, quadrupoles=quad)
             return h1e + self.h1e_mmpol
 
         def energy_nuc(self):
@@ -727,12 +773,25 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             e_tot = method_class.energy_tot(self, dm, h1e, vhf)
 
-            e_tot += self.ommp_obj.get_full_bnd_energy()
-            e_tot += self.ommp_obj.get_full_ele_energy()
-            e_tot += self.ommp_obj.get_vdw_energy()
-            # QM-MM VdW interaction
-            if(self.ommp_qm_helper.use_nonbonded):
-                e_tot += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+            if hasattr(self, 'e_mmpol_crdhash'):
+                tmp_hash = hash(self.mol.atom_coords().tostring()+\
+                                self.ommp_obj.cmm.tostring())
+                if tmp_hash != self.e_mmpol_crdhash:
+                    delattr(self, e_mmpol_crdhash)
+                    delattr(self, e_mmpol)
+
+            if not hasattr(self, 'e_mmpol'):
+                self.e_mmpol = self.ommp_obj.get_full_bnd_energy()
+                self.e_mmpol += self.ommp_obj.get_full_ele_energy()
+                self.e_mmpol += self.ommp_obj.get_vdw_energy()
+                # QM-MM VdW interaction
+                if(self.ommp_qm_helper.use_nonbonded):
+                    self.e_mmpol += self.ommp_qm_helper.vdw_energy(self.ommp_obj)
+                # Hash the coordinates of the system to avoid useless calculations
+                # of energy components.
+                self.e_mmpol_crdhash = hash(self.mol.atom_coords().tostring()+\
+                                            self.ommp_obj.cmm.tostring())
+            e_tot += self.e_mmpol
 
             return e_tot
 
@@ -930,21 +989,19 @@ def qmmmpol_grad_for_scf(scf_grad):
                     g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[3:6], mu[i0:i1])
                     g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[6:9], mu[i0:i1])
 
+                    tmp_quad = quad[i0:i1,[0,1,3,1,2,4,3,4,5]]
+
                     A = df.incore.aux_e2(self.base.mol,
                                             fm,
                                             intor='int3c2e_ipipip1')
-                    B =   df.incore.aux_e2(self.base.mol,
-                                           fm,
-                                           intor='int3c2e_ipipvip1')
-                    Bt = numpy.einsum('ipqk->iqpk',
-                                      numpy.concatenate((B[::3],
-                                                         B[1::3],
-                                                         B[2::3]), axis=0))
-                    ints = A + 2*B + Bt
+                    B = df.incore.aux_e2(self.base.mol,
+                                         fm,
+                                         intor='int3c2e_ipipvip1')
 
-                    g_mm[0] += numpy.einsum('ipqk,ki->pq', ints[0:9],   quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
-                    g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[9:18],  quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
-                    g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[18:27], quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
+                    for idx in range(3):
+                        g_mm[idx] += numpy.einsum('ipqk,ki->pq', A[idx*9:(idx+1)*9],   tmp_quad)
+                        g_mm[idx] += 2.0*numpy.einsum('ipqk,ki->pq', B[idx*9:(idx+1)*9], tmp_quad)
+                        g_mm[idx] += numpy.einsum('ipqk,ki->qp', B[idx::3], tmp_quad)
 
             if self.base.do_pol:
                 # Contribution of the converged induced dipoles
