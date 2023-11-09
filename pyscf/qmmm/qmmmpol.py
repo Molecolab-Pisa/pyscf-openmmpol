@@ -993,15 +993,15 @@ def qmmmpol_grad_for_scf(scf_grad):
 
                     A = df.incore.aux_e2(self.base.mol,
                                             fm,
-                                            intor='int3c2e_ipipip1')
+                                            intor='int3c2e_ipipip1').transpose(1,2,3,0)
                     B = df.incore.aux_e2(self.base.mol,
                                          fm,
-                                         intor='int3c2e_ipipvip1')
+                                         intor='int3c2e_ipipvip1').transpose(1,2,3,0)
 
                     for idx in range(3):
-                        g_mm[idx] += numpy.einsum('ipqk,ki->pq', A[idx*9:(idx+1)*9],   tmp_quad)
-                        g_mm[idx] += 2.0*numpy.einsum('ipqk,ki->pq', B[idx*9:(idx+1)*9], tmp_quad)
-                        g_mm[idx] += numpy.einsum('ipqk,ki->qp', B[idx::3], tmp_quad)
+                        g_mm[idx] += numpy.einsum('pqki,ki->pq', A[:,:,:,idx*9:(idx+1)*9],   tmp_quad)
+                        g_mm[idx] += 2.0*numpy.einsum('pqki,ki->pq', B[:,:,:,idx*9:(idx+1)*9], tmp_quad)
+                        g_mm[idx] += numpy.einsum('pqki,ki->qp', B[:,:,:,idx::3], tmp_quad)
 
             if self.base.do_pol:
                 # Contribution of the converged induced dipoles
