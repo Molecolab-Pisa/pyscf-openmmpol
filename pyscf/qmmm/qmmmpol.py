@@ -989,21 +989,19 @@ def qmmmpol_grad_for_scf(scf_grad):
                     g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[3:6], mu[i0:i1])
                     g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[6:9], mu[i0:i1])
 
+                    tmp_quad = quad[i0:i1,[0,1,3,1,2,4,3,4,5]]
+
                     A = df.incore.aux_e2(self.base.mol,
                                             fm,
                                             intor='int3c2e_ipipip1')
-                    B =   df.incore.aux_e2(self.base.mol,
-                                           fm,
-                                           intor='int3c2e_ipipvip1')
-                    Bt = numpy.einsum('ipqk->iqpk',
-                                      numpy.concatenate((B[::3],
-                                                         B[1::3],
-                                                         B[2::3]), axis=0))
-                    ints = A + 2*B + Bt
+                    B = df.incore.aux_e2(self.base.mol,
+                                         fm,
+                                         intor='int3c2e_ipipvip1')
 
-                    g_mm[0] += numpy.einsum('ipqk,ki->pq', ints[0:9],   quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
-                    g_mm[1] += numpy.einsum('ipqk,ki->pq', ints[9:18],  quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
-                    g_mm[2] += numpy.einsum('ipqk,ki->pq', ints[18:27], quad[i0:i1,[0,1,3,1,2,4,3,4,5]])
+                    for idx in range(3):
+                        g_mm[idx] += numpy.einsum('ipqk,ki->pq', A[idx*9:(idx+1)*9],   tmp_quad)
+                        g_mm[idx] += 2.0*numpy.einsum('ipqk,ki->pq', B[idx*9:(idx+1)*9], tmp_quad)
+                        g_mm[idx] += numpy.einsum('ipqk,ki->qp', B[idx::3], tmp_quad)
 
             if self.base.do_pol:
                 # Contribution of the converged induced dipoles
