@@ -335,13 +335,8 @@ class _Integrator(lib.StreamObject):
         # TODO, can make this cleaner by removing an explicit zip and
         # try to leverage numpy vectors
         energy = 0
-<<<<<<< HEAD
         for v, m in zip(self.veloc, self.masses):
             energy += 0.5 * m * data.nist.AMU2AU * np.linalg.norm(v)**2
-=======
-        for v, m in zip(self.veloc, self._masses):
-            energy += 0.5 * m * np.linalg.norm(v) ** 2
->>>>>>> v2.4.0
 
         return energy
 
@@ -490,7 +485,6 @@ class VelocityVerlet(_Integrator):
         if not self.scanner.converged:
             raise RuntimeError('Gradients did not converge!')
 
-<<<<<<< HEAD
         a = []
         for m, g in zip(self.masses, grad):
             # a = - \nabla U / m
@@ -503,10 +497,6 @@ class VelocityVerlet(_Integrator):
 
     def _next_atom_velocity(self, v, a2, a1):
         return v + self.dt * 0.5 * (a2 + a1)
-=======
-        a = -1 * grad / self._masses.reshape(-1, 1)
-        return e_tot, a
->>>>>>> v2.4.0
 
     def _next_geometry(self):
         '''Computes the next geometry using the Velocity Verlet algorithm. The
