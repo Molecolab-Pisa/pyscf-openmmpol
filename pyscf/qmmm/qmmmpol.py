@@ -296,7 +296,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
                     V_dc[j0:j1] = numpy.einsum('mnj,mn->j',
                                                 df.incore.aux_e2(mol, _fm, intor='int3c2e'),
-                                                dm)
+                                                dm,
+                                                optimize='optimal')
                 if charges is None:
                     return V_dc
                 else:
@@ -322,7 +323,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             nao = mol.nao
             nmmp = fm.natm
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+            blksize = int(min(self.fakeget_mem*1e6/(8*3)/nao**2, 500))
 
             if dipoles is None and dm is None:
                 Ef = df.incore.aux_e2(mol, fm,
@@ -333,18 +334,20 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 Ef_dc = numpy.zeros([nao,nao])
                 for j0, j1, in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    Ef_dc -= numpy.einsum('imnj,ji->mn',
-                                          df.incore.aux_e2(mol, _fm, intor='int3c2e_ip1'),
-                                          dipoles[j0:j1])
+                    Ef_dc -= numpy.einsum('mnji,ji->mn',
+                                          df.incore.aux_e2(mol, _fm, intor='int3c2e_ip1').transpose((1,2,3,0)),
+                                          dipoles[j0:j1],
+                                          optimize='optimal')
                 return Ef_dc + Ef_dc.T
             elif dm is not None:
                 Ef_dc = numpy.empty([nmmp,3])
 
                 for j0, j1 in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    Ef_dc[j0:j1] = numpy.einsum('imnj,mn->ji',
-                                                df.incore.aux_e2(mol, _fm, intor='int3c2e_ip1'),
-                                                dm)
+                    Ef_dc[j0:j1] = numpy.einsum('jimn,mn->ji',
+                                                df.incore.aux_e2(mol, _fm, intor='int3c2e_ip1').transpose((3,0,1,2)),
+                                                dm,
+                                                optimize='optimal')
                 Ef_dc *= 2.
                 if dipoles is None:
                     return Ef_dc
@@ -374,7 +377,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             nao = mol.nao
             nmmp = fm.natm
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+            blksize = int(min(self.fakeget_mem*1e6/(8*9)/nao**2, 500))
 
             # PySCF order for field gradient tensor
             #  0  1  2  3  4  5  6  7  8
@@ -455,7 +458,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             nao = mol.nao
             nmmp = fm.natm
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+            blksize = int(min(self.fakeget_mem*1e6/(8*27)/nao**2, 500))
 
             # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
             #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
@@ -777,8 +780,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 tmp_hash = hash(self.mol.atom_coords().tostring()+\
                                 self.ommp_obj.cmm.tostring())
                 if tmp_hash != self.e_mmpol_crdhash:
-                    delattr(self, e_mmpol_crdhash)
-                    delattr(self, e_mmpol)
+                    delattr(self, 'e_mmpol_crdhash')
+                    delattr(self, 'e_mmpol')
 
             if not hasattr(self, 'e_mmpol'):
                 self.e_mmpol = self.ommp_obj.get_full_bnd_energy()
@@ -962,7 +965,10 @@ def qmmmpol_grad_for_scf(scf_grad):
 
             nao = mol.nao
             q = self.base.ommp_obj.static_charges
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
+            if self.base.ommp_obj.is_amoeba:
+                blksize = int(min(self.fakeget_mem*1e6/(8*27*2)/nao**2, 200))
+            else:
+                blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
 
             g_mm = numpy.zeros(g_qm.shape)
             for i0, i1 in lib.prange(0, q.size, blksize):
@@ -999,9 +1005,9 @@ def qmmmpol_grad_for_scf(scf_grad):
                                          intor='int3c2e_ipipvip1').transpose(1,2,3,0)
 
                     for idx in range(3):
-                        g_mm[idx] += numpy.einsum('pqki,ki->pq', A[:,:,:,idx*9:(idx+1)*9],   tmp_quad)
-                        g_mm[idx] += 2.0*numpy.einsum('pqki,ki->pq', B[:,:,:,idx*9:(idx+1)*9], tmp_quad)
-                        g_mm[idx] += numpy.einsum('pqki,ki->qp', B[:,:,:,idx::3], tmp_quad)
+                        g_mm[idx] += numpy.einsum('pqki,ki->pq', A[:,:,:,idx*9:(idx+1)*9],   tmp_quad, optimize='optimal')
+                        g_mm[idx] += 2.0*numpy.einsum('pqki,ki->pq', B[:,:,:,idx*9:(idx+1)*9], tmp_quad, optimize='optimal')
+                        g_mm[idx] += numpy.einsum('pqki,ki->qp', B[:,:,:,idx::3], tmp_quad, optimize='optimal')
 
             if self.base.do_pol:
                 # Contribution of the converged induced dipoles
@@ -1013,6 +1019,7 @@ def qmmmpol_grad_for_scf(scf_grad):
 
                 g_pol = numpy.zeros(g_mm.shape)
 
+                blksize = int(min(self.fakeget_mem*1e6/(8*9*2)/nao**2, 200))
                 for i0, i1 in lib.prange(0, q.size, blksize):
                     fm = gto.fakemol_for_charges(self.base.ommp_obj.cpol[i0:i1])
                     ints = df.incore.aux_e2(self.base.mol,
