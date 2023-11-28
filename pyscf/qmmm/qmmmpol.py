@@ -105,6 +105,12 @@ class QMMMPolMole(gto.Mole):
         full_coords[self.MM_atm_lst] = self.ommp_obj.cmm[self.unfrozenMM]
         return full_coords
 
+    def atom_charges(self):
+        full_ac = numpy.empty([self.natm], dtype=numpy.int32)
+        full_ac[self.QM_atm_lst] = self.molQM.atom_charges()
+        full_ac[self.MM_atm_lst] = self.ommp_obj.zmm[self.unfrozenMM]
+        return full_ac
+
 class _QMMM_GradScanner(lib.GradScanner):
     def __init__(self, gs, remove_frozen_atoms = False):
         self.mol = QMMMPolMole(gs.mol, gs.base.ommp_obj, gs.base._qmhelper, remove_frozen_atoms)
