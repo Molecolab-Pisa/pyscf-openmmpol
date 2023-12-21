@@ -419,29 +419,25 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 blksize = int(min(self.fakeget_mem*1e6/(8*3)/nao**2, 500))
 
                 ommp.time_push()
-                efi_pol = numpy.empty([3,len(self.int1e_screening),npol])
+                efi_pol = numpy.empty([3,npol,len(self.int1e_screening)])
                 for j0, j1 in lib.prange(0, npol, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[polatm[j0:j1]])
-                    _efi = df.incore.aux_e2(self.mol, _fm, intor='int3c2e_ip1')
-                    _efi = _efi.reshape(3,nao*nao,j1-j0)
-                    _efi = _efi[:,self.int1e_screening,:]
-                    efi_pol[:,:,j0:j1] = _efi
+                    _efi = ommp_get_3c2eint(self.mol, _fm, intor='int3c2e_ip1')
+                    _efi = _efi.transpose()
+                    _efi = _efi.reshape(3, (j1-j0), nao*nao, order='C')
+                    _efi = _efi[:,:,self.int1e_screening]
+                    efi_pol[:,j0:j1,:] = _efi
+                efi_pol = efi_pol.reshape(3*npol, len(self.int1e_screening))
 
-                efi_pol = efi_pol.transpose((1,2,0))
-                efi_pol = efi_pol.reshape(len(self.int1e_screening),3*npol)
-                efi_pol = numpy.ascontiguousarray(efi_pol)
-
-                efi_mm  = numpy.empty([3,len(self.int1e_screening),nmm])
+                efi_mm  = numpy.empty([3,nmm,len(self.int1e_screening)])
                 for j0, j1 in lib.prange(0, nmm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[mmatm[j0:j1]])
-                    _efi = df.incore.aux_e2(self.mol, _fm, intor='int3c2e_ip1')
-                    _efi = _efi.reshape(3,nao*nao,j1-j0)
-                    _efi = _efi[:,self.int1e_screening,:]
-                    efi_mm[:,:,j0:j1] = _efi
-                efi_mm = efi_mm.transpose((1,2,0))
-                efi_mm = efi_mm.reshape(len(self.int1e_screening),3*nmm)
-                efi_mm = numpy.ascontiguousarray(efi_mm)
-
+                    _efi = ommp_get_3c2eint(self.mol, _fm, intor='int3c2e_ip1')
+                    _efi = _efi.transpose()
+                    _efi = _efi.reshape(3, (j1-j0), nao*nao, order='C')
+                    _efi = _efi[:,:,self.int1e_screening]
+                    efi_mm[:,j0:j1,:] = _efi
+                efi_mm = efi_mm.reshape(3*nmm, len(self.int1e_screening))
                 self._ef_integrals = {'pol': efi_pol, 'mm': efi_mm}
                 ommp.time_pull("Computing and storing EF integrals")
             return self._ef_integrals
@@ -471,15 +467,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 return df.incore.aux_e2(mol, fm,
                                         intor='int3c2e')
             elif charges is not None and dm is None:
-                V_dc = numpy.zeros([nao, nao])
+                V_dc = numpy.zeros([nao*nao])
                 for j0, j1, in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    # It seems that the normal einsum is faster here.
-                    V_dc -= numpy.einsum('mnj,j->mn',
-                                         df.incore.aux_e2(mol, _fm, intor='int3c2e'),
-                                         charges[j0:j1])
-                    #_ints = df.incore.aux_e2(mol, _fm, intor='int3c2e').reshape(nao*nao, j1-j0)[self.int1e_screening,:]
-                    #V_dc[self.int1e_screening] -= lib.numpy_helper.ddot(_ints, charges[j0:j1].reshape([j1-j0, 1])).flatten()
+
+                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e')
+                    _ints = _ints.transpose()
+                    _ints = _ints.reshape(j1-j0, nao*nao, order='C')
+
+                    V_dc -= numpy.ravel(lib.numpy_helper.ddot(charges[j0:j1].reshape(1, j1-j0), _ints))
+                V_dc = V_dc.reshape(nao, nao)
                 return V_dc
             elif dm is not None:
                 V_dc = numpy.empty([nmmp])
@@ -540,17 +537,17 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     Ef_dc = numpy.zeros(nao*nao)
                     if not pol:
                         #Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals, dipoles.flatten())
-                        print("Contracting static dipoles with integrals (POL:{:d}/MM:{:d})".format(len(polatm), len(mmatm)))
-                        _dipoles =  numpy.ascontiguousarray(dipoles[polatm,:].reshape([len(polatm)*3,1]))
-                        Ef_dc[self.int1e_screening] =  -lib.numpy_helper.ddot(self.ef_integrals['pol'],
-                                                                              _dipoles).flatten()
-                        _dipoles =  numpy.ascontiguousarray(dipoles[mmatm,:].reshape([len(mmatm)*3,1]))
-                        Ef_dc[self.int1e_screening] -=  lib.numpy_helper.ddot(self.ef_integrals['mm'],
-                                                                              _dipoles).flatten()
+                        _dipoles = numpy.ascontiguousarray(dipoles[polatm,:].transpose().reshape([1,len(polatm)*3]))
+                        Ef_dc[self.int1e_screening] = -numpy.ravel(lib.numpy_helper.ddot(_dipoles,
+                                                                                         self.ef_integrals['pol']))
+                        _dipoles = numpy.ascontiguousarray(dipoles[mmatm,:].transpose().reshape([1,len(mmatm)*3]))
+                        Ef_dc[self.int1e_screening] += -numpy.ravel(lib.numpy_helper.ddot(_dipoles,
+                                                                                         self.ef_integrals['mm']))
                     else:
                         #Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals['pol'], dipoles.flatten())
-                        Ef_dc[self.int1e_screening] = -lib.numpy_helper.ddot(self.ef_integrals['pol'],
-                                                                             dipoles.reshape([nmmp*3,1])).flatten()
+                        _dipoles = numpy.ascontiguousarray(dipoles.transpose().reshape([1,nmmp*3]))
+                        Ef_dc[self.int1e_screening] = -numpy.ravel(lib.numpy_helper.ddot(_dipoles,
+                                                                                         self.ef_integrals['pol']))
                     Ef_dc = Ef_dc.reshape(nao,nao)
                 return Ef_dc + Ef_dc.T
             elif dm is not None:
@@ -566,21 +563,19 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 else:
                     scrlist = self.int1e_screening
                     ommp.time_push()
+                    _dm = dm.reshape([nao*nao,1])[scrlist]
                     if not pol:
-                        Ef_dc = numpy.empty([nmmp,3])
+                        Ef_dc = numpy.empty([3,nmmp])
                         #Ef_dc = numpy.einsum('ni,n->i', self.ef_integrals, dm.flatten()[scrlist])
-                        Ef_dc[mmatm,:] = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
-                                                               self.ef_integrals['mm']).reshape(len(mmatm), 3)
-                        Ef_dc[polatm,:] = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
-                                                                self.ef_integrals['pol']).reshape(len(polatm), 3)
+                        Ef_dc[:,mmatm] = lib.numpy_helper.ddot(self.ef_integrals['mm'], _dm).reshape(3, len(mmatm))
+                        Ef_dc[:,polatm] = lib.numpy_helper.ddot(self.ef_integrals['pol'], _dm).reshape(3, len(polatm))
                     else:
                         #Ef_dc = numpy.einsum('ni,n->i',
                         #        self.ef_integrals['pol'],
                         #                     dm.flatten()[scrlist])
-                        Ef_dc = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
-                                                      self.ef_integrals['pol'])
+                        Ef_dc = lib.numpy_helper.ddot(self.ef_integrals['pol'], _dm).reshape(3,nmmp)
                     ommp.time_pull("Computing electric field")
-                    Ef_dc = Ef_dc.reshape((nmmp,3))
+                    Ef_dc = Ef_dc.transpose()
                 Ef_dc *= 2.
 
                 if dipoles is None:
