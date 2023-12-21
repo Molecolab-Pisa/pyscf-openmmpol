@@ -33,7 +33,98 @@ from pyscf.data.elements import NUC as Symbol2Z, _symbol
 from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
 import pyopenmmpol as ommp
 
-dgemm = lib.numpy_helper._dgemm
+def ommp_get_3c2eint(mol, auxmol_or_auxbasis, intor='int3c2e', aosym='s1', comp=None, out=None,
+                     cintopt=None):
+    '''3-center AO integrals (ij|L), where L is the auxiliary basis.
+
+    Kwargs:
+        cintopt : Libcint-3.14 and newer version support to compute int3c2e
+            without the opt for the 3rd index.  It can be precomputed to
+            reduce the overhead of cintopt initialization repeatedly.
+
+            cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas, mol._env, 'int3c2e')
+    '''
+    from pyscf import gto
+    from pyscf.gto.moleintor import _get_intor_and_comp, ANG_OF, make_loc, libcgto, make_cintopt
+    import ctypes
+
+    if not intor.startswith('int3c2e'):
+        raise NotImplementedError("Only int3c2e integrals can be computed in ommp_get_3c2eints; not {:s}.".format(intor))
+
+    if isinstance(auxmol_or_auxbasis, gto.MoleBase):
+        auxmol = auxmol_or_auxbasis
+    else:
+        auxbasis = auxmol_or_auxbasis
+        auxmol = addons.make_auxmol(mol, auxbasis)
+    shls_slice = (0, mol.nbas, 0, mol.nbas, mol.nbas, mol.nbas+auxmol.nbas)
+
+    # Extract the call of the two lines below
+    #  pmol = gto.mole.conc_mol(mol, auxmol)
+    #  return pmol.intor(intor, comp, aosym=aosym, shls_slice=shls_slice, out=out)
+    intor = mol._add_suffix(intor)
+    hermi = 0
+    atm, bas, env = gto.mole.conc_env(mol._atm, mol._bas, mol._env,
+                                      auxmol._atm, auxmol._bas, auxmol._env)
+
+    intor, comp = _get_intor_and_comp(intor, comp)
+    if any(bas[:,ANG_OF] > 12):
+        raise NotImplementedError('cint library does not support high angular (l>12) GTOs')
+
+    atm = numpy.asarray(atm, dtype=numpy.int32, order='C')
+    bas = numpy.asarray(bas, dtype=numpy.int32, order='C')
+    env = numpy.asarray(env, dtype=numpy.double, order='C')
+    natm = atm.shape[0]
+    nbas = bas.shape[0]
+    assert (shls_slice[1] <= nbas and
+           shls_slice[3] <= nbas and
+           shls_slice[5] <= nbas)
+
+    i0, i1, j0, j1, k0, k1 = shls_slice[:6]
+    ao_loc = make_loc(bas, intor)
+    if 'ssc' in intor:
+        ao_loc[k0:] = ao_loc[k0] + make_loc(bas[k0:], 'cart')
+    elif 'spinor' in intor:
+        # The auxbasis for electron-2 is in real spherical representation
+        ao_loc[k0:] = ao_loc[k0] + make_loc(bas[k0:], 'sph')
+
+    naok = ao_loc[k1] - ao_loc[k0]
+
+    if aosym in ('s1',):
+        naoi = ao_loc[i1] - ao_loc[i0]
+        naoj = ao_loc[j1] - ao_loc[j0]
+        shape = (naoi, naoj, naok, comp)
+    else:
+        aosym = 's2ij'
+        nij = ao_loc[i1]*(ao_loc[i1]+1)//2 - ao_loc[i0]*(ao_loc[i0]+1)//2
+        shape = (nij, naok, comp)
+
+    if 'spinor' in intor:
+        mat = numpy.ndarray(shape, numpy.complex128, out, order='F')
+        drv = libcgto.GTOr3c_drv
+        fill = getattr(libcgto, 'GTOr3c_fill_'+aosym)
+    else:
+        mat = numpy.ndarray(shape, numpy.double, out, order='F')
+        drv = libcgto.GTOnr3c_drv
+        fill = getattr(libcgto, 'GTOnr3c_fill_'+aosym)
+
+    if mat.size > 0:
+        # Generating opt for all indices leads to large overhead and poor OMP
+        # speedup for solvent model and COSX functions. In these methods,
+        # the third index of the three center integrals corresponds to a
+        # large number of grids. Initializing the opt for the third index is
+        # not necessary.
+        if cintopt is None:
+            # int3c2e opt without the 3rd index.
+            cintopt = make_cintopt(atm, bas[:max(i1, j1)], env, intor)
+
+        drv(getattr(libcgto, intor), fill,
+            mat.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(comp),
+            (ctypes.c_int*6)(*(shls_slice[:6])),
+            ao_loc.ctypes.data_as(ctypes.c_void_p), cintopt,
+            atm.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(natm),
+            bas.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nbas),
+            env.ctypes.data_as(ctypes.c_void_p))
+    return mat
 
 class QMMMPolMole(gto.Mole):
     def __init__(self, molQM, ommp_obj, ommp_qm_helper, remove_frozen_atoms=False):
@@ -315,34 +406,38 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 fm = self.fakemol_static
                 nao = self.mol.nao
                 nmmp = fm.natm
-                nmm  = self.ommp_obj.mm_atoms - self.ommp_obj.pol_atoms
-                npol = self.ommp_obj.pol_atoms
+
+                polatm = []
+                mmatm = []
+                for i in range(nmmp):
+                    if i in self.ommp_obj.polar_mm:
+                        polatm += [i]
+                    else:
+                        mmatm += [i]
+                nmm  = len(mmatm)
+                npol = len(polatm)
                 blksize = int(min(self.fakeget_mem*1e6/(8*3)/nao**2, 500))
 
                 ommp.time_push()
                 efi_pol = numpy.empty([3,len(self.int1e_screening),npol])
-                efi_mm  = numpy.empty([3,len(self.int1e_screening),nmm])
-                k_pol = 0
-                k_mm = 0
-                for j0, j1 in lib.prange(0, nmmp, blksize):
-                    _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                for j0, j1 in lib.prange(0, npol, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[polatm[j0:j1]])
                     _efi = df.incore.aux_e2(self.mol, _fm, intor='int3c2e_ip1')
                     _efi = _efi.reshape(3,nao*nao,j1-j0)
                     _efi = _efi[:,self.int1e_screening,:]
-                    for ii, jj in enumerate(range(j0, j1)):
-                        if jj in self.ommp_obj.polar_mm:
-                            # Polarizable atoms
-                            efi_pol[:,:,k_pol] = _efi[:,:,ii]
-                            k_pol += 1
-                        else:
-                            # Purely MM atom
-                            efi_mm[:,:,k_mm] = _efi[:,:,ii]
-                            k_mm += 1
+                    efi_pol[:,:,j0:j1] = _efi
 
                 efi_pol = efi_pol.transpose((1,2,0))
                 efi_pol = efi_pol.reshape(len(self.int1e_screening),3*npol)
                 efi_pol = numpy.ascontiguousarray(efi_pol)
 
+                efi_mm  = numpy.empty([3,len(self.int1e_screening),nmm])
+                for j0, j1 in lib.prange(0, nmm, blksize):
+                    _fm = gto.fakemol_for_charges(fm.atom_coords()[mmatm[j0:j1]])
+                    _efi = df.incore.aux_e2(self.mol, _fm, intor='int3c2e_ip1')
+                    _efi = _efi.reshape(3,nao*nao,j1-j0)
+                    _efi = _efi[:,self.int1e_screening,:]
+                    efi_mm[:,:,j0:j1] = _efi
                 efi_mm = efi_mm.transpose((1,2,0))
                 efi_mm = efi_mm.reshape(len(self.int1e_screening),3*nmm)
                 efi_mm = numpy.ascontiguousarray(efi_mm)
@@ -369,31 +464,31 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             nao = mol.nao
             nmmp = fm.natm
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+            memperblk = 8*nao**2
+            blksize = int(min(self.fakeget_mem*1e6/memperblk, 10e9/memperblk))
 
             if charges is None and dm is None:
                 return df.incore.aux_e2(mol, fm,
                                         intor='int3c2e')
             elif charges is not None and dm is None:
-                V_dc = numpy.zeros([nao,nao])
+                V_dc = numpy.zeros([nao, nao])
                 for j0, j1, in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    # It seems that the normal einsum is faster here.
                     V_dc -= numpy.einsum('mnj,j->mn',
-                                          df.incore.aux_e2(mol, _fm, intor='int3c2e'),
-                                          charges[j0:j1])
+                                         df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                         charges[j0:j1])
+                    #_ints = df.incore.aux_e2(mol, _fm, intor='int3c2e').reshape(nao*nao, j1-j0)[self.int1e_screening,:]
+                    #V_dc[self.int1e_screening] -= lib.numpy_helper.ddot(_ints, charges[j0:j1].reshape([j1-j0, 1])).flatten()
                 return V_dc
             elif dm is not None:
                 V_dc = numpy.empty([nmmp])
-                _dm = dm.flatten()[self.int1e_screening]
 
                 for j0, j1 in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
                     V_dc[j0:j1] = numpy.einsum('mnj,mn->j',
-                                               df.incore.aux_e2(mol,
-                                                                _fm,
-                                                                intor='int3c2e').reshape(nao*nao,j1-j0)[self.int1e_screening,:],
-                                                _dm,
-                                                optimize='optimal')
+                                               df.incore.aux_e2(mol, _fm, intor='int3c2e'),
+                                               dm)
                 if charges is None:
                     return V_dc
                 else:
@@ -413,15 +508,22 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 nmmp = self.ommp_obj.pol_atoms
                 fm = self.fakemol_pol
             else:
-                direct_alg = True
                 nmmp = self.ommp_obj.mm_atoms
                 fm = self.fakemol_static
+                polatm = []
+                mmatm = []
+                for i in range(nmmp):
+                    if i in self.ommp_obj.polar_mm:
+                        polatm += [i]
+                    else:
+                        mmatm += [i]
 
             if mol is not None and mol is not self.mol:
                 raise NotImplementedError("External mol is not supported in the current version.")
 
             nao = mol.nao
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 500))
+            memperblk = 8*nao**2*3
+            blksize = int(min(self.fakeget_mem*1e6/memperblk, 10e9/memperblk))
 
             if dipoles is None and dm is None:
                 raise NotImplementedError("Raw integrals cannot be returned, just contracted ones.")
@@ -437,8 +539,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 else:
                     Ef_dc = numpy.zeros(nao*nao)
                     if not pol:
-                        #TODO
-                        Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals, dipoles.flatten())
+                        #Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals, dipoles.flatten())
+                        print("Contracting static dipoles with integrals (POL:{:d}/MM:{:d})".format(len(polatm), len(mmatm)))
+                        _dipoles =  numpy.ascontiguousarray(dipoles[polatm,:].reshape([len(polatm)*3,1]))
+                        Ef_dc[self.int1e_screening] =  -lib.numpy_helper.ddot(self.ef_integrals['pol'],
+                                                                              _dipoles).flatten()
+                        _dipoles =  numpy.ascontiguousarray(dipoles[mmatm,:].reshape([len(mmatm)*3,1]))
+                        Ef_dc[self.int1e_screening] -=  lib.numpy_helper.ddot(self.ef_integrals['mm'],
+                                                                              _dipoles).flatten()
                     else:
                         #Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals['pol'], dipoles.flatten())
                         Ef_dc[self.int1e_screening] = -lib.numpy_helper.ddot(self.ef_integrals['pol'],
@@ -459,8 +567,12 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     scrlist = self.int1e_screening
                     ommp.time_push()
                     if not pol:
-                        #TODO
-                        Ef_dc = numpy.einsum('ni,n->i', self.ef_integrals, dm.flatten()[scrlist])
+                        Ef_dc = numpy.empty([nmmp,3])
+                        #Ef_dc = numpy.einsum('ni,n->i', self.ef_integrals, dm.flatten()[scrlist])
+                        Ef_dc[mmatm,:] = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
+                                                               self.ef_integrals['mm']).reshape(len(mmatm), 3)
+                        Ef_dc[polatm,:] = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
+                                                                self.ef_integrals['pol']).reshape(len(polatm), 3)
                     else:
                         #Ef_dc = numpy.einsum('ni,n->i',
                         #        self.ef_integrals['pol'],
@@ -528,17 +640,37 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 return Gef[[0,1,4,2,5,8]]
 
             elif quadrupoles is not None and dm is None:
-                Gef = numpy.zeros([nao, nao])
+                Gef = numpy.zeros([nao*nao])
                 for j0, j1, in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
+                    #ommp.time_push()
+                    #_ints = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1') + \
+                    #        df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1')
+                    #ommp.time_pull("Computing integrals")
+                    ommp.time_push()
+                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1') + \
+                            ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
+                    print(_ints.shape)
+                    ommp.time_pull("My Compute integrals")
+
+
+                    ommp.time_push()
+                    _ints = _ints.reshape(nao*nao,9*(j1-j0))
+                    ommp.time_pull("Reshaping integrals")
+
+                    ommp.time_push()
                     tmp_quad = numpy.zeros([j1-j0,9])
                     tmp_quad[:,[1,2,5]] = quadrupoles[j0:j1,[1,3,4]]
                     tmp_quad[:,[3,6,7]] = tmp_quad[:,[1,2,5]]
                     tmp_quad[:,[0,4,8]] = quadrupoles[j0:j1,[0,2,5]]
-                    nni_j = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1')
-                    Gef += numpy.einsum('inmj,ji->nm', nni_j, tmp_quad)
-                    ni_nj = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1')
-                    Gef += numpy.einsum('inmj,ji->nm', ni_nj, tmp_quad)
+                    tmp_quad = tmp_quad.reshape([(j1-j0)*9, 1])
+                    ommp.time_pull("Reshaping quadrupoles")
+
+                    ommp.time_push()
+                    Gef += lib.numpy_helper.ddot(_ints, tmp_quad).flatten()
+                    ommp.time_pull("Contraction")
+                Gef = Gef.reshape(nao,nao)
+
                 return Gef + Gef.T
             elif dm is not None:
                 Gef = numpy.empty([nmmp,9])
@@ -862,14 +994,21 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             self.h1e_mmpol = 0.0
             #for i0, i1 in lib.prange(0, q.size, blksize):
             #    self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            ommp.time_push()
             self.h1e_mmpol += self.v_integrals_ommp(mol=mol, charges=q)
+            ommp.time_pull("HCore: q/v")
 
             if self.ommp_obj.is_amoeba:
+                ommp.time_push()
+                self.ef_integrals
+                ommp.time_pull("Getting EF Integrals")
+                ommp.time_push()
                 self.h1e_mmpol += self.ef_integrals_ommp(mol=mol, dipoles=self.ommp_obj.static_dipoles)
+                ommp.time_pull("HCore: mu/E")
 
-                quad = self.ommp_obj.static_quadrupoles
-
-                self.h1e_mmpol -= self.gef_integrals_ommp(mol=mol, quadrupoles=quad)
+                ommp.time_push()
+                self.h1e_mmpol -= self.gef_integrals_ommp(mol=mol, quadrupoles=self.ommp_obj.static_quadrupoles)
+                ommp.time_pull("HCore: Q/G")
             ommp.time_pull('HCore MMPol')
             return h1e + self.h1e_mmpol
 
