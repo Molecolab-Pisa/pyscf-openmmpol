@@ -650,24 +650,28 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     ommp.time_push()
                     _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1') + \
                             ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
-                    print(_ints.shape)
                     ommp.time_pull("My Compute integrals")
 
 
                     ommp.time_push()
-                    _ints = _ints.reshape(nao*nao,9*(j1-j0))
+                    ommp.time_push()
+                    _ints = _ints.flatten(order='K')
+                    ommp.time_pull("Flatten")
+                    ommp.time_push()
+                    _ints = _ints.reshape(9*(j1-j0), nao*nao, order='C')
+                    ommp.time_pull("Reshape")
                     ommp.time_pull("Reshaping integrals")
 
                     ommp.time_push()
-                    tmp_quad = numpy.zeros([j1-j0,9])
-                    tmp_quad[:,[1,2,5]] = quadrupoles[j0:j1,[1,3,4]]
-                    tmp_quad[:,[3,6,7]] = tmp_quad[:,[1,2,5]]
-                    tmp_quad[:,[0,4,8]] = quadrupoles[j0:j1,[0,2,5]]
-                    tmp_quad = tmp_quad.reshape([(j1-j0)*9, 1])
+                    tmp_quad = numpy.zeros([9,j1-j0])
+                    tmp_quad[[1,2,5],:] = quadrupoles[j0:j1,[1,3,4]].T
+                    tmp_quad[[0,4,8],:] = quadrupoles[j0:j1,[0,2,5]].T
+                    tmp_quad[[3,6,7],:] = tmp_quad[[1,2,5],:]
+                    tmp_quad = tmp_quad.reshape([1,(j1-j0)*9])
                     ommp.time_pull("Reshaping quadrupoles")
 
                     ommp.time_push()
-                    Gef += lib.numpy_helper.ddot(_ints, tmp_quad).flatten()
+                    Gef += lib.numpy_helper.ddot(tmp_quad, _ints).flatten()
                     ommp.time_pull("Contraction")
                 Gef = Gef.reshape(nao,nao)
 
