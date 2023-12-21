@@ -643,36 +643,23 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 Gef = numpy.zeros([nao*nao])
                 for j0, j1, in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    #ommp.time_push()
-                    #_ints = df.incore.aux_e2(mol, _fm, intor='int3c2e_ipip1') + \
-                    #        df.incore.aux_e2(mol, _fm, intor='int3c2e_ipvip1')
-                    #ommp.time_pull("Computing integrals")
-                    ommp.time_push()
-                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1') + \
-                            ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
-                    ommp.time_pull("My Compute integrals")
 
+                    nni_j = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1')
+                    nni_j = nni_j.transpose()
+                    nni_j = nni_j.reshape(9*(j1-j0), nao*nao, order='C')
 
-                    ommp.time_push()
-                    ommp.time_push()
-                    _ints = _ints.flatten(order='K')
-                    ommp.time_pull("Flatten")
-                    ommp.time_push()
-                    _ints = _ints.reshape(9*(j1-j0), nao*nao, order='C')
-                    ommp.time_pull("Reshape")
-                    ommp.time_pull("Reshaping integrals")
+                    ni_nj = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
+                    ni_nj = ni_nj.transpose()
+                    ni_nj = ni_nj.reshape(9*(j1-j0), nao*nao, order='C')
 
-                    ommp.time_push()
                     tmp_quad = numpy.zeros([9,j1-j0])
                     tmp_quad[[1,2,5],:] = quadrupoles[j0:j1,[1,3,4]].T
                     tmp_quad[[0,4,8],:] = quadrupoles[j0:j1,[0,2,5]].T
                     tmp_quad[[3,6,7],:] = tmp_quad[[1,2,5],:]
                     tmp_quad = tmp_quad.reshape([1,(j1-j0)*9])
-                    ommp.time_pull("Reshaping quadrupoles")
 
-                    ommp.time_push()
-                    Gef += lib.numpy_helper.ddot(tmp_quad, _ints).flatten()
-                    ommp.time_pull("Contraction")
+                    Gef += numpy.ravel(lib.numpy_helper.ddot(tmp_quad, nni_j))
+                    Gef += numpy.ravel(lib.numpy_helper.ddot(tmp_quad, ni_nj))
                 Gef = Gef.reshape(nao,nao)
 
                 return Gef + Gef.T
