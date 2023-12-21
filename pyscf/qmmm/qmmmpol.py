@@ -31,9 +31,9 @@ from pyscf import grad
 from pyscf.lib import logger
 from pyscf.data.elements import NUC as Symbol2Z, _symbol
 from pyscf.qmmm.itrf import _QMMM, _QMMMGrad
-#from pyscf.qmmm.qmmm_integrals import qmmm_get_3c2e, qmmm_get_int1e_screening
 import pyopenmmpol as ommp
-import pyopenmmpol.libcintUtils as ommp_lciutils
+
+dgemm = lib.numpy_helper._dgemm
 
 class QMMMPolMole(gto.Mole):
     def __init__(self, molQM, ommp_obj, ommp_qm_helper, remove_frozen_atoms=False):
@@ -315,20 +315,39 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 fm = self.fakemol_static
                 nao = self.mol.nao
                 nmmp = fm.natm
+                nmm  = self.ommp_obj.mm_atoms - self.ommp_obj.pol_atoms
+                npol = self.ommp_obj.pol_atoms
                 blksize = int(min(self.fakeget_mem*1e6/(8*3)/nao**2, 500))
 
                 ommp.time_push()
-                efi = numpy.empty([3,len(self.int1e_screening),nmmp])
-                #efi = numpy.empty([3,nao,nao,nmmp])
+                efi_pol = numpy.empty([3,len(self.int1e_screening),npol])
+                efi_mm  = numpy.empty([3,len(self.int1e_screening),nmm])
+                k_pol = 0
+                k_mm = 0
                 for j0, j1 in lib.prange(0, nmmp, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
                     _efi = df.incore.aux_e2(self.mol, _fm, intor='int3c2e_ip1')
                     _efi = _efi.reshape(3,nao*nao,j1-j0)
                     _efi = _efi[:,self.int1e_screening,:]
-                    efi[:,:,j0:j1] = _efi
-                efi = efi.transpose((1,2,0))
-                efi = efi.reshape(len(self.int1e_screening),3*nmmp)
-                self._ef_integrals = efi
+                    for ii, jj in enumerate(range(j0, j1)):
+                        if jj in self.ommp_obj.polar_mm:
+                            # Polarizable atoms
+                            efi_pol[:,:,k_pol] = _efi[:,:,ii]
+                            k_pol += 1
+                        else:
+                            # Purely MM atom
+                            efi_mm[:,:,k_mm] = _efi[:,:,ii]
+                            k_mm += 1
+
+                efi_pol = efi_pol.transpose((1,2,0))
+                efi_pol = efi_pol.reshape(len(self.int1e_screening),3*npol)
+                efi_pol = numpy.ascontiguousarray(efi_pol)
+
+                efi_mm = efi_mm.transpose((1,2,0))
+                efi_mm = efi_mm.reshape(len(self.int1e_screening),3*nmm)
+                efi_mm = numpy.ascontiguousarray(efi_mm)
+
+                self._ef_integrals = {'pol': efi_pol, 'mm': efi_mm}
                 ommp.time_pull("Computing and storing EF integrals")
             return self._ef_integrals
 
@@ -391,13 +410,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             at coordinates of MM atoms."""
 
             if pol:
-                polidx = []
-                for i in self.ommp_obj.polar_mm:
-                    polidx += [i*3, i*3+1, i*3+2]
-
                 nmmp = self.ommp_obj.pol_atoms
                 fm = self.fakemol_pol
             else:
+                direct_alg = True
                 nmmp = self.ommp_obj.mm_atoms
                 fm = self.fakemol_static
 
@@ -421,9 +437,12 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 else:
                     Ef_dc = numpy.zeros(nao*nao)
                     if not pol:
+                        #TODO
                         Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals, dipoles.flatten())
                     else:
-                        Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals[:,polidx], dipoles.flatten())
+                        #Ef_dc[self.int1e_screening] = -numpy.einsum('ni,i->n', self.ef_integrals['pol'], dipoles.flatten())
+                        Ef_dc[self.int1e_screening] = -lib.numpy_helper.ddot(self.ef_integrals['pol'],
+                                                                             dipoles.reshape([nmmp*3,1])).flatten()
                     Ef_dc = Ef_dc.reshape(nao,nao)
                 return Ef_dc + Ef_dc.T
             elif dm is not None:
@@ -440,11 +459,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                     scrlist = self.int1e_screening
                     ommp.time_push()
                     if not pol:
+                        #TODO
                         Ef_dc = numpy.einsum('ni,n->i', self.ef_integrals, dm.flatten()[scrlist])
                     else:
-                        Ef_dc = numpy.einsum('ni,n->i',
-                                             self.ef_integrals[:,polidx],
-                                             dm.flatten()[scrlist])
+                        #Ef_dc = numpy.einsum('ni,n->i',
+                        #        self.ef_integrals['pol'],
+                        #                     dm.flatten()[scrlist])
+                        Ef_dc = lib.numpy_helper.ddot(dm.reshape([1,nao*nao])[:,scrlist],
+                                                      self.ef_integrals['pol'])
                     ommp.time_pull("Computing electric field")
                     Ef_dc = Ef_dc.reshape((nmmp,3))
                 Ef_dc *= 2.
