@@ -231,6 +231,11 @@ Keyword argument "init_dm" is replaced by "dm0"''')
         if dump_chk:
             mf.dump_chk(locals())
 
+    if mf.disp is not None:
+        e_disp = mf.get_dispersion()
+        mf.scf_summary['dispersion'] = e_disp
+        e_tot += e_disp
+
     logger.timer(mf, 'scf_cycle', *cput0)
     # A post-processing hook before return
     mf.post_kernel(locals())
@@ -427,8 +432,8 @@ def init_guess_by_minao(mol):
                     'elements. "atom" initial guess is used.')
         return init_guess_by_atom(mol)
 
-    nelec_ecp_dic = dict([(mol.atom_symbol(ia), mol.atom_nelec_core(ia))
-                          for ia in range(mol.natm)])
+    nelec_ecp_dic = {mol.atom_symbol(ia): mol.atom_nelec_core(ia)
+                          for ia in range(mol.natm)}
 
     basis = {}
     occdic = {}
@@ -1472,14 +1477,14 @@ class SCF(lib.StreamObject):
 
     callback = None
 
-    _keys = set((
+    _keys = {
         'conv_tol', 'conv_tol_grad', 'max_cycle', 'init_guess',
         'DIIS', 'diis', 'diis_space', 'diis_start_cycle',
         'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
         'direct_scf', 'direct_scf_tol', 'conv_check', 'callback',
         'mol', 'chkfile', 'mo_energy', 'mo_coeff', 'mo_occ',
-        'e_tot', 'converged', 'scf_summary', 'opt',
-    ))
+        'e_tot', 'converged', 'scf_summary', 'opt', 'disp',
+    }
 
     def __init__(self, mol):
         if not mol._built:
@@ -1490,6 +1495,7 @@ class SCF(lib.StreamObject):
         self.verbose = mol.verbose
         self.max_memory = mol.max_memory
         self.stdout = mol.stdout
+        self.disp = None
 
         # If chkfile is muted, SCF intermediates will not be dumped anywhere.
         if MUTE_CHKFILE:
@@ -2002,6 +2008,25 @@ employing the updated GWH rule from doi:10.1021/ja00480a005.''')
         dst.converged = False
         return dst
 
+    def to_gpu(self):
+        '''Converts to the object with GPU support.
+        '''
+        raise NotImplementedError
+
+    def istype(self, type_code):
+        '''
+        Checks if the object is an instance of the class specified by the type_code.
+        type_code can be a class or a str. If the type_code is a class, it is
+        equivalent to the Python built-in function `isinstance`. If the type_code
+        is a str, it checks the type_code against the names of the object and all
+        its parent classes.
+        '''
+        if isinstance(type_code, type):
+            # type_code is a class
+            return isinstance(self, type_code)
+
+        return any(type_code == t.__name__ for t in self.__class__.__mro__)
+
 
 class KohnShamDFT:
     '''A mock DFT base class
@@ -2111,6 +2136,12 @@ class RHF(SCF):
         '''
         from pyscf import dft
         return self._transfer_attrs_(dft.RKS(self.mol, xc=xc))
+
+    def to_gpu(self):
+        # FIXME: consider the density_fit, x2c and soscf decoration
+        from gpu4pyscf.scf import RHF
+        obj = SCF.reset(self.view(RHF))
+        return lib.to_gpu(obj)
 
 def _hf1e_scf(mf, *args):
     logger.info(mf, '\n')

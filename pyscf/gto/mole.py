@@ -419,7 +419,7 @@ def format_atom(atoms, origin=0, axes=None,
     return list(zip(z, c.tolist()))
 
 #TODO: sort exponents
-def format_basis(basis_tab):
+def format_basis(basis_tab, sort_basis=True):
     '''Convert the input :attr:`Mole.basis` to the internal data format.
 
     ``{ atom: [(l, ((-exp, c_1, c_2, ..),
@@ -457,10 +457,16 @@ def format_basis(basis_tab):
     fmt_basis = {}
     for atom, atom_basis in basis_tab.items():
         symb = _atom_symbol(atom)
-        fmt_basis[symb] = basis_converter(symb, atom_basis)
-
-        if len(fmt_basis[symb]) == 0:
+        _basis = basis_converter(symb, atom_basis)
+        if len(_basis) == 0:
             raise BasisNotFoundError('Basis not found for  %s' % symb)
+
+        # Sort basis accroding to angular momentum. This is important for method
+        # decontract_basis, which assumes that basis functions with the same
+        # angular momentum are grouped together. Related to issue #1620 #1770
+        if sort_basis:
+            _basis = sorted([b for b in _basis if b], key=lambda b: b[0])
+        fmt_basis[symb] = _basis
     return fmt_basis
 
 def _generate_basis_converter():
@@ -503,11 +509,6 @@ def _generate_basis_converter():
                     _basis.extend(nparray_to_list(rawb))
         else:
             _basis = nparray_to_list(raw_basis)
-
-        # Sort basis accroding to angular momentum. This is important for method
-        # decontract_basis, which assumes that basis functions with the same
-        # angular momentum are grouped together. Related to issue #1620 #1770
-        _basis = sorted([b for b in _basis if b], key=lambda b: b[0])
         return _basis
     return converter
 
@@ -626,6 +627,9 @@ def decontract_basis(mol, atoms=None, to_cart=False):
 
     aoslices = mol.aoslice_by_atom()
     for ia, (ib0, ib1) in enumerate(aoslices[:,:2]):
+        if ib0 == ib1: # No basis on atom ia
+            continue
+
         if atoms is not None:
             if isinstance(atoms, str):
                 to_apply = ((atoms == mol.atom_pure_symbol(ia)) or
@@ -651,6 +655,8 @@ def decontract_basis(mol, atoms=None, to_cart=False):
             bas_idx = ib0 + numpy.where(mol._bas[ib0:ib1,ANG_OF] == l)[0]
             if len(bas_idx) == 0:
                 continue
+            if bas_idx[0] + len(bas_idx) != bas_idx[-1] + 1:
+                raise NotImplementedError('Discontinuous bases of same angular momentum')
 
             mol_exps, b_coeff = _to_full_contraction(mol, bas_idx)
             nprim, nc = b_coeff.shape
@@ -1023,7 +1029,7 @@ def make_env(atoms, basis, pre_env=[], nucmod={}, nucprop={}):
     '''
     _atm = []
     _bas = []
-    _env = []
+    _env = [pre_env]
     ptr_env = len(pre_env)
 
     for ia, atom in enumerate(atoms):
@@ -1092,10 +1098,7 @@ def make_env(atoms, basis, pre_env=[], nucmod={}, nucprop={}):
         _bas = numpy.asarray(numpy.vstack(_bas), numpy.int32).reshape(-1, BAS_SLOTS)
     else:
         _bas = numpy.zeros((0,BAS_SLOTS), numpy.int32)
-    if _env:
-        _env = numpy.hstack((pre_env,numpy.hstack(_env)))
-    else:
-        _env = numpy.array(pre_env, copy=False)
+    _env = numpy.asarray(numpy.hstack(_env), dtype=numpy.float64)
     return _atm, _bas, _env
 
 def make_ecp_env(mol, _atm, ecp, pre_env=[]):
@@ -1240,12 +1243,12 @@ def unpack(moldic):
 def dumps(mol):
     '''Serialize Mole object to a JSON formatted str.
     '''
-    exclude_keys = set(('output', 'stdout', '_keys',
+    exclude_keys = {'output', 'stdout', '_keys',
                         # Constructing in function loads
-                        'symm_orb', 'irrep_id', 'irrep_name'))
+                        'symm_orb', 'irrep_id', 'irrep_name'}
     # FIXME: nparray and kpts for cell objects may need to be excluded
-    nparray_keys = set(('_atm', '_bas', '_env', '_ecpbas',
-                        '_symm_orig', '_symm_axes'))
+    nparray_keys = {'_atm', '_bas', '_env', '_ecpbas',
+                        '_symm_orig', '_symm_axes'}
 
     moldic = dict(mol.__dict__)
     for k in exclude_keys:
@@ -1292,7 +1295,10 @@ def loads(molstr):
     mol.atom = eval(mol.atom)
     mol.basis= eval(mol.basis)
     mol.ecp  = eval(mol.ecp)
-    mol.pseudo  = eval(mol.pseudo)
+    if 'pseudo' in moldic:
+        # backward compatibility with old dumps function, which does not have
+        # the pseudo attribute
+        mol.pseudo  = eval(mol.pseudo)
     mol._atm = numpy.array(mol._atm, dtype=numpy.int32)
     mol._bas = numpy.array(mol._bas, dtype=numpy.int32)
     mol._env = numpy.array(mol._env, dtype=numpy.double)
@@ -2097,7 +2103,7 @@ def tofile(mol, filename, format=None):
     if format is None:  # Guess format based on filename
         format = os.path.splitext(filename)[1][1:]
     string = tostring(mol, format)
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         f.write(string)
         f.write('\n')
     return string
@@ -2513,18 +2519,20 @@ class MoleBase(lib.StreamObject):
                     print('output file: %s' % self.output)
 
             if self.output == '/dev/null':
-                self.stdout = open(os.devnull, 'w')
+                self.stdout = open(os.devnull, 'w', encoding='utf-8')
             else:
-                self.stdout = open(self.output, 'w')
+                self.stdout = open(self.output, 'w', encoding='utf-8')
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
 
-        self._atom = self.format_atom(self.atom, unit=self.unit)
-        uniq_atoms = set([a[0] for a in self._atom])
+        if self.atom:
+            self._atom = self.format_atom(self.atom, unit=self.unit)
+        uniq_atoms = {a[0] for a in self._atom}
 
-        _basis = _parse_default_basis(self.basis, uniq_atoms)
-        self._basis = self.format_basis(_basis)
+        if self.basis:
+            _basis = _parse_default_basis(self.basis, uniq_atoms)
+            self._basis = self.format_basis(_basis)
         env = self._env[:PTR_ENV_START]
         self._atm, self._bas, self._env = \
                 self.make_env(self._atom, self._basis, env, self.nucmod,
@@ -2640,30 +2648,12 @@ class MoleBase(lib.StreamObject):
                            for ir in self.irrep_id]
         return self
 
-    @lib.with_doc(format_atom.__doc__)
-    def format_atom(self, atom, origin=0, axes=None, unit='Ang'):
-        return format_atom(atom, origin, axes, unit)
-
-    @lib.with_doc(format_basis.__doc__)
-    def format_basis(self, basis_tab):
-        return format_basis(basis_tab)
-
-    @lib.with_doc(format_pseudo.__doc__)
-    def format_pseudo(self, pseudo_tab):
-        return format_pseudo(pseudo_tab)
-
-    @lib.with_doc(format_ecp.__doc__)
-    def format_ecp(self, ecp_tab):
-        return format_ecp(ecp_tab)
-
-    @lib.with_doc(expand_etb.__doc__)
-    def expand_etb(self, l, n, alpha, beta):
-        return expand_etb(l, n, alpha, beta)
-
-    @lib.with_doc(expand_etbs.__doc__)
-    def expand_etbs(self, etbs):
-        return expand_etbs(etbs)
-    etbs = expand_etbs
+    format_atom = staticmethod(format_atom)
+    format_basis = staticmethod(format_basis)
+    format_pseudo = staticmethod(format_pseudo)
+    format_ecp = staticmethod(format_ecp)
+    expand_etb = staticmethod(expand_etb)
+    expand_etbs = etbs = staticmethod(expand_etbs)
 
     @lib.with_doc(make_env.__doc__)
     def make_env(self, atoms, basis, pre_env=[], nucmod={}, nucprop=None):
@@ -3710,7 +3700,7 @@ class Mole(MoleBase):
                      '_repr_mimebundle_'):
             # https://github.com/mewwts/addict/issues/26
             # https://github.com/jupyter/notebook/issues/2014
-            raise AttributeError
+            raise AttributeError(f'Mole object has no attribute {key}')
 
         # Import all available modules. Some methods are registered to other
         # classes/modules when importing modules in __all__.
@@ -3731,8 +3721,10 @@ class Mole(MoleBase):
                 if xc in dft.XC:
                     mf.xc = xc
                     key = 'TDDFT'
-        else:
+        elif 'CI' in key or 'CC' in key or 'CAS' in key or 'MP' in key:
             mf = scf.HF(self)
+        else:
+            raise AttributeError(f'Mole object has no attribute {key}')
 
         method = getattr(mf, key)
 
