@@ -339,14 +339,14 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def fakeget_mem(self):
+            """Return the number of float64 which can be safely allocated in  memory."""
             return (self.max_memory - lib.current_memory()[0]) * 1e6 / 8 # In number of float64
 
         @property
-        def max_memblk(self):
-            return 50e9 / 8 # In number of float!
-
-        @property
         def ommp_qm_helper(self, inmol=None):
+            """Return the qm_helper object exposed by OpenMMPol, if the coordinates are changed
+            in the PySCF mol, the object is updated accordingly. If the object still doesen't
+            exists, it is created from PySCF mol"""
             if inmol is None:
                 mol = self.mol
             else:
@@ -356,16 +356,24 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 qmat_c = mol.atom_coords()
                 qmat_z = [Symbol2Z[a[0]] for a in mol._atom]
                 self._qmhelper = ommp.OMMPQmHelper(qmat_c, qmat_q, qmat_z)
+            # TODO probably here is more efficient to use crdhash, instead.
             elif not numpy.allclose(mol.atom_coords(), self._qmhelper.cqm):
                 self._qmhelper.update_coord(mol.atom_coords())
             return self._qmhelper
 
         @property
         def crdhash(self):
+            """Compute an hash of the coordinaates of the QM part of
+            the system; used to check if some quantities (eg. stored
+            integrals) should be updated."""
+            # TODO probably conversion to string is a bit brutal here
             return hash(self.mol.atom_coords().tostring()+\
                         self.ommp_obj.cmm.tostring())
 
         def check_crdhash(self):
+            """Use crdhash to check for a change in QM coordinates. If such
+            a change happened, the quantities which are no longer valid are
+            deleted"""
             perishable_attr = ['e_mmpol',
                                '_int1e_screening',
                                '_ef_integrals']
@@ -388,6 +396,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def int1e_screening(self, thr=1e-6):
+            """Compute a mask to remove from the calculation components of
+            electrostatic atomic integrals  which are always close to zero.
+            This is used to compress the electric field integrals and save
+            them during the SCF."""
             self.check_crdhash()
             if not hasattr(self, '_int1e_screening'):
                 S = self.mol.intor('int1e_ipnuc_sph')
@@ -404,6 +416,11 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         @property
         def ef_integrals(self):
+            """ Return the compressed electric field atomic integrals, to be contracted with densities
+            and/or induced dipoles during the SCF procedure. If they haven't been computed before,
+            they are computed and stored"""
+            # TODO if the available memory is not enough for saving them they should be computed
+            # ecery time on the fly in chunk.
             self.check_crdhash()
             if not hasattr(self, '_ef_integrals'):
                 fm = self.fakemol_static
@@ -523,6 +540,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             if mol is not None and mol is not self.mol:
                 raise NotImplementedError("External mol is not supported in the current version.")
+            if mol is None:
+                mol = self.mol
 
             nao = mol.nao
             memperblk = 8*nao**2*3
@@ -687,18 +706,21 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 _dm = dm.reshape(nao*nao, 1)
                 for j0, j1 in lib.prange(0, fm.natm, blksize):
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    _ints1 = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1')
-                    _ints2 = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
-                    _ints1 = _ints1.transpose()
-                    _ints1 = _ints1.reshape(9, (j1-j0), nao*nao)
-                    _ints2 = _ints2.transpose()
-                    _ints2 = _ints2.reshape(9, (j1-j0), nao*nao)
-                    _ints = _ints1 + _ints2
+                    ommp.time_push()
+                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1') + ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
+                    _ints = _ints.transpose()
+                    _ints = _ints.reshape(9, (j1-j0), nao*nao)
+                    #_ints2 = _ints2.transpose()
+                    #_ints2 = _ints2.reshape(9, (j1-j0), nao*nao)
+                    #_ints = _ints1 + _ints2
+                    ommp.time_pull("Integrals")
 
+                    ommp.time_push()
                     for j in range(9):
                         Gef[j,j0:j1] = numpy.ravel(lib.numpy_helper.ddot(_ints[j], _dm))
                         #lib.numpy_helper.ddot(_ints1[j], _dm, c=Gef[j:j+1,j0:j1].transpose(), beta=1.0)
                         #lib.numpy_helper.ddot(_ints2[j], _dm, c=Gef[j:j+1,j0:j1].transpose(), beta=1.0)
+                    ommp.time_pull("Contracting")
 
                 Gef = Gef.T
                 Gef[:,[1,2,5]] += Gef[:,[3,6,7]]
@@ -732,8 +754,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             nao = mol.nao
             nmmp = fm.natm
-            #blksize = int(min(self.fakeget_mem*1e6/(8*27)/nao**2, 500))
-            blksize = 2
+            blksize = int(min(self.fakeget_mem*1e6/(8*27)/nao**2, 500))
 
             # 0   1   2   3   4   5   6   7   8   9  10  11  12  13
             #xxx xxy xxz xyx xyy xyz xzx xzy xzz yxx yxy yxz yyx yyy
@@ -782,18 +803,22 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
                 _dm = dm.reshape(nao*nao, 1)
                 for j0, j1 in lib.prange(0, fm.natm, blksize):
+                    ommp.time_push()
                     _fm = gto.fakemol_for_charges(fm.atom_coords()[j0:j1])
-                    _ints1 = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipipip1')
-                    _ints2 = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipipvip1')
-                    _ints1 = _ints1.transpose()
-                    _ints1 = _ints1.reshape(27, (j1-j0), nao*nao)
-                    _ints2 = _ints2.transpose()
-                    _ints2 = _ints2.reshape(27, (j1-j0), nao*nao)
-                    _ints = _ints1 + 3. * _ints2
+                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipipip1') + 3* ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipipvip1')
+                    _ints = _ints.transpose()
+                    _ints = _ints.reshape(27, (j1-j0), nao*nao)
+                    #_ints2 = _ints2.transpose()
+                    #_ints2 = _ints2.reshape(27, (j1-j0), nao*nao)
+                    #_ints = _ints1 + 3. * _ints2
+                    ommp.time_pull("Integrals")
+                    ommp.time_push()
+
                     for j in range(27):
                         Hef[j,j0:j1] = numpy.ravel(lib.numpy_helper.ddot(_ints[j], _dm))
                         #Hef[j:j+1,j0:j1] += lib.numpy_helper.ddot(_ints1[j], _dm, alpha=1.0).T
                         #Hef[j:j+1,j0:j1] += lib.numpy_helper.ddot(_ints2[j], _dm, alpha=3.0).T
+                    ommp.time_pull("Contracting")
                 Hef = Hef.T
 
                 # Compress and make symmetric
@@ -1071,6 +1096,7 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return nuc
 
         def energy_elec(self, dm=None, h1e=None, vhf=None):
+            """Energy of the electronic part of the system"""
             ene_el = method_class.energy_elec(self, dm, h1e, vhf)
 
             if getattr(vhf, 'e_mmpol', None):
@@ -1141,7 +1167,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return vind_mmpol
 
         def energy_analysis(self):
-            # TODO Improve this analysis
+            """Simple analysis of the energy terms composing the total
+            energy, mainly here for debug pourposes"""
             au2k = 627.50960803
             smm_ene = self.ommp_obj.get_fixedelec_energy()
             pmm_ene = self.ommp_obj.get_polelec_energy()
@@ -1184,7 +1211,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
         def create_link_atom(self, imm, iqm, ila, prmfile):
             """Set ila to be a link atom between iqm and imm. This function
-            changes the coordinates of ila"""
+            changes the coordinates of ila, and is only useful in rare cases
+            as the functionality is provided in a more clean fashon by json input."""
             self.ommp_qm_helper
             idxla = self.ommp_obj.create_link_atom(self._qmhelper, imm, iqm, ila, prmfile)
 
@@ -1336,8 +1364,8 @@ def qmmmpol_grad_for_scf(scf_grad):
                         g_mm[idx] += 2*numpy.ravel(lib.numpy_helper.ddot(_quad, _ints2[idx*9:(idx+1)*9].reshape(9*(i1-i0), nao*nao)))
                         g_mm[idx] += numpy.ravel(lib.numpy_helper.ddot(_quad, _ints2[idx::3].reshape(9*(i1-i0), nao*nao)).reshape(nao,nao).transpose().reshape(nao*nao))
 
-                g_mm = g_mm.reshape(3, nao, nao)
-                g_mm = numpy.einsum('imn->inm', g_mm)
+            g_mm = g_mm.reshape(3, nao, nao)
+            g_mm = numpy.einsum('imn->inm', g_mm)
 
             if self.base.do_pol:
                 # Contribution of the converged induced dipoles
