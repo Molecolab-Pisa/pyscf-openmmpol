@@ -1062,11 +1062,16 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             q = self.ommp_obj.static_charges
             blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
 
-            self.h1e_mmpol = 0.0
-            #for i0, i1 in lib.prange(0, q.size, blksize):
-            #    self.h1e_mmpol -= numpy.einsum('nmi,i->nm', self.v_integrals_ommp(mol=mol, i0=i0, i1=i1), q[i0:i1])
+            self.h1e_mmpol = numpy.zeros([nao, nao])
+
             ommp.time_push()
-            self.h1e_mmpol += self.v_integrals_ommp(mol=mol, charges=q)
+
+            for i0, i1 in lib.prange(0, self.ommp_obj.mm_atoms, blksize):
+                _fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+                _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e')
+                _ints = _ints.transpose()
+                _ints = _ints.reshape(i1-i0, nao*nao, order='C')
+                self.h1e_mmpol -= lib.numpy_helper.ddot(q[i0:i1].reshape(1, i1-i0), _ints).reshape(nao, nao)
             ommp.time_pull("HCore: q/v")
 
             if self.ommp_obj.is_amoeba:
@@ -1074,11 +1079,42 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self.ef_integrals
                 ommp.time_pull("Getting EF Integrals")
                 ommp.time_push()
-                self.h1e_mmpol += self.ef_integrals_ommp(mol=mol, dipoles=self.ommp_obj.static_dipoles)
+                for i0, i1 in lib.prange(0, self.ommp_obj.mm_atoms, blksize):
+                    _fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+
+                    _ints = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ip1')
+                    _ints = _ints.transpose()
+                    _ints = _ints.reshape(3*(i1-i0), nao*nao, order='C')
+
+                    _mu = self.ommp_obj.static_dipoles[i0:i1].transpose().reshape((1,3*(i1-i0)))
+
+                    Ef = numpy.ravel(lib.numpy_helper.ddot(_mu, _ints))
+                    self.h1e_mmpol -= Ef.reshape(nao,nao) + Ef.reshape(nao,nao).T
                 ommp.time_pull("HCore: mu/E")
 
+            if self.ommp_obj.is_amoeba:
                 ommp.time_push()
-                self.h1e_mmpol -= self.gef_integrals_ommp(mol=mol, quadrupoles=self.ommp_obj.static_quadrupoles)
+                for i0, i1 in lib.prange(0, self.ommp_obj.mm_atoms, blksize):
+                    _fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
+
+                    nni_j = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipip1')
+                    nni_j = nni_j.transpose()
+                    nni_j = nni_j.reshape(9*(i1-i0), nao*nao, order='C')
+
+                    ni_nj = ommp_get_3c2eint(mol, _fm, intor='int3c2e_ipvip1')
+                    ni_nj = ni_nj.transpose()
+                    ni_nj = ni_nj.reshape(9*(i1-i0), nao*nao, order='C')
+
+                    tmp_quad = numpy.zeros([9,i1-i0])
+                    tmp_quad[[1,2,5],:] = self.ommp_obj.static_quadrupoles[i0:i1,[1,3,4]].T
+                    tmp_quad[[0,4,8],:] = self.ommp_obj.static_quadrupoles[i0:i1,[0,2,5]].T
+                    tmp_quad[[3,6,7],:] = tmp_quad[[1,2,5],:]
+                    tmp_quad = tmp_quad.reshape([1,(i1-i0)*9])
+
+                    Gef  = numpy.ravel(lib.numpy_helper.ddot(tmp_quad, nni_j))
+                    Gef += numpy.ravel(lib.numpy_helper.ddot(tmp_quad, ni_nj))
+                    self.h1e_mmpol -= Gef.reshape(nao,nao) + Gef.reshape(nao,nao).T
+
                 ommp.time_pull("HCore: Q/G")
             ommp.time_pull('HCore MMPol')
             return h1e + self.h1e_mmpol
