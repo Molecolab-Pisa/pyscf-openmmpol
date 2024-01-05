@@ -1372,17 +1372,45 @@ def qmmmpol_grad_for_scf(scf_grad):
             ommp.time_pull('Charges')
 
             # AMOEBA also have fixed dipoles
-            if self.base.ommp_obj.is_amoeba:
+            if self.base.ommp_obj.is_amoeba or self.base.do_pol:
                 # fixed dipoles
                 ommp.time_push()
-                mu = self.base.ommp_obj.static_dipoles
-                if domm:
-                    # This is needed for multipoles torque
-                    Gef_at_MM = numpy.zeros([q.size,6])
+                # Create a map to put all polarizable atoms at the beginning
+                # that is contiguously to compute simultaneously the components
+                # of g_mm due to static dipoles and of g_pol due to induce dipoles.
+                ommp.time_push()
+                map_oo2no = numpy.empty(self.base.ommp_obj.mm_atoms, dtype=numpy.int64)
+                map_oo2no[0:self.base.ommp_obj.pol_atoms] = self.base.ommp_obj.polar_mm
+                map_oo2no[self.base.ommp_obj.pol_atoms:] = [i for i in range(self.base.ommp_obj.mm_atoms) if i not in self.base.ommp_obj.polar_mm]
+                ommp.time_pull("Map oo2no creation")
 
-                for i0, i1 in lib.prange(0, q.size, blksize):
+                no_cmm = self.base.ommp_obj.cmm[map_oo2no]
+                no_mus = self.base.ommp_obj.static_dipoles[map_oo2no]
+
+                if self.base.do_pol:
+                    # Contribution of the converged induced dipoles
+                    if not self.base.ommp_obj.is_amoeba:
+                        mui = self.base.get_mmpol_induced_dipoles()
+                    else:
+                        mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
+                        mui = 0.5 * (mu_p + mu_d)
+
+                if domm:
+                    # To have consistency with screened integrals used before
+                    _dm_pol = _dm.copy()
+                    #_dm_pol[self.base.int1e_screening] = 0.0
+                    if self.base.ommp_obj.is_amoeba:
+                        # This is needed for multipoles torque
+                        Gef_at_MM = numpy.zeros([q.size,6])
+
+                if self.base.ommp_obj.is_amoeba:
+                    maxidx = self.base.ommp_obj.mm_atoms
+                else:
+                    maxidx = self.base.ommp_obj.pol_atoms
+
+                for i0, i1 in lib.prange(0, maxidx, blksize):
                     ommp.time_push()
-                    fm = gto.fakemol_for_charges(self.base.ommp_obj.cmm[i0:i1])
+                    fm = gto.fakemol_for_charges(no_cmm[i0:i1])
 
                     _ints1 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipip1')
                     _ints1 = _ints1.transpose()
@@ -1390,29 +1418,76 @@ def qmmmpol_grad_for_scf(scf_grad):
                     _ints2 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipvip1')
                     _ints2 = _ints2.transpose()
                     _ints2 = _ints2.reshape(3, 3*(i1-i0), nao*nao)
-                    _mu = numpy.ascontiguousarray(mu[i0:i1].transpose().reshape(1,3*(i1-i0)))
-                    ommp.time_pull('Integrals mus')
+                    ommp.time_pull('Integrals mus and mui')
+
                     ommp.time_push()
-                    for j in range(3):
-                        self.g_mm[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints1[j]))
-                        self.g_mm[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints2[j]))
+                    # Flag to check if there are polarizabilities to contract
+                    contract_pol = self.base.do_pol and i0 < self.base.ommp_obj.pol_atoms
+
+                    if self.base.ommp_obj.is_amoeba:
+                        _mu = numpy.ascontiguousarray(no_mus[i0:i1].transpose().reshape(1,3*(i1-i0)))
+                        for j in range(3):
+                            self.g_mm[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints1[j]))
+                            self.g_mm[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints2[j]))
+
+                    if contract_pol:
+                        i1_pol = min(i1, self.base.ommp_obj.pol_atoms)
+                        if i1_pol == i1:
+                            _mui = numpy.ascontiguousarray(mui[i0:i1_pol].transpose().reshape(1,3*(i1_pol-i0)))
+                        else:
+                            _mui = numpy.zeros([1,3*(i1-i0)])
+                            for i in range(3):
+                                _mui[0,(i1-i0)*i:(i1-i0)*i+(i1_pol-i0)] = mui[i0:i1_pol,i]
+                        for j in range(3):
+                            self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mui, _ints1[j]))
+                            self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mui, _ints2[j]))
 
                     if domm:
-                        Gef = numpy.zeros([3, 3*(i1-i0)])
-                        for j in range(3):
-                            Gef[j]  = numpy.ravel(lib.numpy_helper.ddot(_ints1[j], _dm))
-                            Gef[j] += numpy.ravel(lib.numpy_helper.ddot(_ints2[j], _dm))
-                        Gef = Gef.reshape(9,i1-i0)
-                        Gef[[1,2,5]] += Gef[[3,6,7]]
-                        Gef[[0,4,8]] *= 2
-                        Gef = Gef[[0,1,4,2,5,8]]
-                        Gef -= self.base.gef_nucl_at_static[i0:i1].T
-                        Gef_at_MM[i0:i1,:] = Gef.T
-                        self.qmmm_force_mm[i0:i1] += -numpy.einsum('ji,i->ij', Gef[[0,1,3]], mu[i0:i1,0])
-                        self.qmmm_force_mm[i0:i1] += -numpy.einsum('ji,i->ij', Gef[[1,2,4]], mu[i0:i1,1])
-                        self.qmmm_force_mm[i0:i1] += -numpy.einsum('ji,i->ij', Gef[[3,4,5]], mu[i0:i1,2])
-                    ommp.time_pull('Contraction mus')
-                ommp.time_pull('Static dipoles')
+                        if self.base.ommp_obj.is_amoeba:
+                            Gef = numpy.zeros([3, 3*(i1-i0)])
+                            for j in range(3):
+                                Gef[j]  = numpy.ravel(lib.numpy_helper.ddot(_ints1[j], _dm))
+                                Gef[j] += numpy.ravel(lib.numpy_helper.ddot(_ints2[j], _dm))
+                            Gef = Gef.reshape(9,i1-i0)
+                            Gef[[1,2,5]] += Gef[[3,6,7]]
+                            Gef[[0,4,8]] *= 2
+                            Gef = Gef[[0,1,4,2,5,8]]
+                            Gef -= self.base.gef_nucl_at_static[map_oo2no[i0:i1]].T
+                            Gef_at_MM[map_oo2no[i0:i1],:] = Gef.T
+                            self.qmmm_force_mm[map_oo2no[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[0,1,3]], no_mus[i0:i1,0])
+                            self.qmmm_force_mm[map_oo2no[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[1,2,4]], no_mus[i0:i1,1])
+                            self.qmmm_force_mm[map_oo2no[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[3,4,5]], no_mus[i0:i1,2])
+
+                        if contract_pol:
+                            if i1_pol == i1:
+                                Gef = numpy.zeros([3, 3*(i1-i0)])
+                                for j in range(3):
+                                    Gef[j]  = numpy.ravel(lib.numpy_helper.ddot(_ints1[j], _dm_pol))
+                                    Gef[j] += numpy.ravel(lib.numpy_helper.ddot(_ints2[j], _dm_pol))
+                                Gef = Gef.reshape(9,i1-i0)
+                                Gef[[1,2,5]] += Gef[[3,6,7]]
+                                Gef[[0,4,8]] *= 2
+                                Gef = Gef[[0,1,4,2,5,8]]
+                                Gef -= self.base.gef_nucl_at_pol[i0:i1].T
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[0,1,3]], mui[i0:i1,0])
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[1,2,4]], mui[i0:i1,1])
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[3,4,5]], mui[i0:i1,2])
+                            else:
+                                Gef = numpy.zeros([3, 3*(i1_pol-i0)])
+                                for j in range(3):
+                                    Gef[j]  = numpy.ravel(lib.numpy_helper.ddot(_ints1[j,:3*(i1_pol-i0)], _dm_pol))
+                                    Gef[j] += numpy.ravel(lib.numpy_helper.ddot(_ints2[j,:3*(i1_pol-i0)], _dm_pol))
+                                Gef = Gef.reshape(9,i1_pol-i0)
+                                Gef[[1,2,5]] += Gef[[3,6,7]]
+                                Gef[[0,4,8]] *= 2
+                                Gef = Gef[[0,1,4,2,5,8]]
+                                Gef -= self.base.gef_nucl_at_pol[i0:i1_pol].T
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1_pol]] += -numpy.einsum('ji,i->ij', Gef[[0,1,3]], mui[i0:i1_pol,0])
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1_pol]] += -numpy.einsum('ji,i->ij', Gef[[1,2,4]], mui[i0:i1_pol,1])
+                                self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1_pol]] += -numpy.einsum('ji,i->ij', Gef[[3,4,5]], mui[i0:i1_pol,2])
+
+                    ommp.time_pull('Contraction mus and mui')
+                ommp.time_pull('Static and induced dipoles')
 
                 # Compute torque of multipoles, this is computed by openmmpol using electric field and
                 # electric field gradients generated by the QM density.
@@ -1475,58 +1550,45 @@ def qmmmpol_grad_for_scf(scf_grad):
             self.g_mm = numpy.einsum('imn->inm', self.g_mm)
 
             if self.base.do_pol:
-                ommp.time_push()
-                # Contribution of the converged induced dipoles
-                if not self.base.ommp_obj.is_amoeba:
-                    mu = self.base.get_mmpol_induced_dipoles()
-                else:
-                    mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
-                    mu = 0.5 * (mu_p + mu_d)
+                #if not self.base.ommp_obj.is_amoeba:
+                #    mu = self.base.get_mmpol_induced_dipoles()
+                #else:
+                #    mu_d, mu_p = self.base.get_mmpol_induced_dipoles()
+                #    mu = 0.5 * (mu_p + mu_d)
 
-                #if domm:
-                #    # To have consistency with screened integrals used before
-                #    _dm[self.base.int1e_screening] = 0.0
+                ##if domm:
+                ##    # To have consistency with screened integrals used before
+                ##    _dm[self.base.int1e_screening] = 0.0
 
-                for i0, i1 in lib.prange(0, self.base.ommp_obj.pol_atoms, blksize):
-                    ommp.time_push()
-                    fm = gto.fakemol_for_charges(self.base.ommp_obj.cpol[i0:i1])
-                    _ints1 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipip1')
-                    _ints1 = _ints1.transpose()
-                    _ints1 = _ints1.reshape(3, 3*(i1-i0), nao*nao)
+                #for i0, i1 in lib.prange(0, self.base.ommp_obj.pol_atoms, blksize):
+                #    ommp.time_push()
+                #    fm = gto.fakemol_for_charges(self.base.ommp_obj.cmm[list(self.base.ommp_obj.polar_mm[i0:i1])+[0]])
+                #    _ints1 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipip1')
+                #    _ints1 = _ints1.transpose()
+                #    _ints1 = _ints1.reshape(3, 3*(i1-i0+1), nao*nao)
 
-                    _ints2 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipvip1')
-                    _ints2 = _ints2.transpose()
-                    _ints2 = _ints2.reshape(3, 3*(i1-i0), nao*nao)
-                    ommp.time_pull("Integrals mui")
+                #    _ints2 = ommp_get_3c2eint(mol, fm, intor='int3c2e_ipvip1')
+                #    _ints2 = _ints2.transpose()
+                #    _ints2 = _ints2.reshape(3, 3*(i1-i0+1), nao*nao)
+                #    ommp.time_pull("Integrals mui")
 
-                    ommp.time_push()
-                    _mu = numpy.ascontiguousarray(mu[i0:i1].transpose().reshape(1,3*(i1-i0)))
-                    for j in range(3):
-                        self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints1[j]))
-                        self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints2[j]))
+                #    ommp.time_push()
+                #    mu = numpy.array(list(mu) + [[0.,0.,0.]])
+                #    print(i0, i1)
+                #    _mu = numpy.ascontiguousarray(mu[i0:i1+1].transpose().reshape(1,3*(i1-i0+1)))
+                #    print(_mu)
+                #    for j in range(3):
+                #        self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints1[j]))
+                #        self.g_pol[j] += numpy.ravel(lib.numpy_helper.ddot(_mu, _ints2[j]))
 
-                    if domm:
-                        Gef = numpy.zeros([3, 3*(i1-i0)])
-                        for j in range(3):
-                            Gef[j]  = numpy.ravel(lib.numpy_helper.ddot(_ints1[j], _dm))
-                            Gef[j] += numpy.ravel(lib.numpy_helper.ddot(_ints2[j], _dm))
-                        Gef = Gef.reshape(9,i1-i0)
-                        Gef[[1,2,5]] += Gef[[3,6,7]]
-                        Gef[[0,4,8]] *= 2
-                        Gef = Gef[[0,1,4,2,5,8]]
-                        Gef -= self.base.gef_nucl_at_pol[i0:i1].T
-                        self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[0,1,3]], mu[i0:i1,0])
-                        self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[1,2,4]], mu[i0:i1,1])
-                        self.qmmm_force_mm[self.base.ommp_obj.polar_mm[i0:i1]] += -numpy.einsum('ji,i->ij', Gef[[3,4,5]], mu[i0:i1,2])
-                    ommp.time_pull("Contraction mui")
+                #    ommp.time_pull("Contraction mui")
 
-                # Remove null terms for integral screening
+		# Remove null terms for integral screening
                 mask = numpy.ones(nao*nao, dtype=bool)
                 mask[self.base.int1e_screening] = False
                 self.g_pol[:,mask] = 0.0
                 self.g_pol = self.g_pol.reshape(3, nao, nao)
                 self.g_pol = numpy.einsum('imn->inm', self.g_pol)
-                ommp.time_pull("Induced dipoles")
 
             return
 
@@ -1548,8 +1610,10 @@ def qmmmpol_grad_for_scf(scf_grad):
                 self.dump_flags()
 
             # Compute the derivatives of QM/MM copling energy
+            ommp.time_push()
             self.grad_qmmm(domm=domm)
-
+            ommp.time_pull("Derivatives of QM/MM coupling")
+            ommp.time_push()
             de_elec_qm = self.grad_elec(mo_energy, mo_coeff, mo_occ, atmlst)
             de_nuc_qm = self.grad_nuc(atmlst=atmlst)
             if isinstance(self.mol, QMMMPolMole):
@@ -1561,6 +1625,7 @@ def qmmmpol_grad_for_scf(scf_grad):
             if self.base.ommp_obj.use_linkatoms:
                 la_contrib = self.base.ommp_qm_helper.link_atom_geomgrad(self.base.ommp_obj, self.de)
                 self.de += la_contrib['QM']
+            ommp.time_pull("Derivatives of QM part")
 
             if domm:
                 ommp.time_push()
