@@ -343,10 +343,6 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             return (self.max_memory - lib.current_memory()[0]) * 1e6 / 8 # In number of float64
 
         @property
-        def max_memblk(self):
-            return 50e9 / 8 # In number of float!
-
-        @property
         def ommp_qm_helper(self, inmol=None):
             """Return the qm_helper object exposed by OpenMMPol, if the coordinates are changed
             in the PySCF mol, the object is updated accordingly. If the object still doesen't
@@ -461,9 +457,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 nmm  = len(mmatm)
                 npol = len(polatm)
 
-                memblksize = int((self.fakeget_mem-3*(nmm+npol)*len(self.int1e_screening)) / (3*nao*nao))
-                maxblksize =  int(self.max_memblk/(3*nao*nao))
-                blksize = min(memblksize, maxblksize)
+                memblksize = int((0.8*self.fakeget_mem-3*(nmm+npol)*len(self.int1e_screening)) / (3*nao*nao))
+                blksize = min(memblksize, 2500//3)
 
                 ommp.time_push()
                 efi_pol = numpy.empty([3,npol,len(self.int1e_screening)])
@@ -494,8 +489,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             nmmp = self.ommp_obj.pol_atoms
             fm = self.fakemol_pol
             nao = mol.nao
-            memperblk = 8*nao**2*3
-            blksize = int(min(self.fakeget_mem*1e6/memperblk, 10e9/memperblk))
+
+            memblksize = int((0.8*self.fakeget_mem) / (3*nao*nao))
+            blksize = min(memblksize, 2500//3)
+
             if force_direct_alg or not self.store_ef_integrals:
                 direct_alg = True
             else:
@@ -788,7 +785,9 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
             ommp.time_push()
             nao = mol.nao
             q = self.ommp_obj.static_charges
-            blksize = int(min(self.fakeget_mem*1e6/8/nao**2, 200))
+
+            memblksize = int((0.8*self.fakeget_mem) / (nao*nao))
+            blksize = min(memblksize, 2500)
 
             self.h1e_mmpol = numpy.zeros([nao, nao])
 
@@ -802,8 +801,10 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
                 self.h1e_mmpol -= lib.numpy_helper.ddot(q[i0:i1].reshape(1, i1-i0), _ints).reshape(nao, nao)
             ommp.time_pull("HCore: q/v")
 
-            if self.ommp_obj.is_amoeba:
+            if self.ommp_obj.is_amoeba or self.do_pol:
                 ommp.time_push()
+                memblksize = int((0.8*self.fakeget_mem) / (3*nao*nao))
+                blksize = min(memblksize, 2500//3)
 
                 ommp.time_push()
                 map_oo2no = numpy.empty(self.ommp_obj.mm_atoms, dtype=numpy.int64)
@@ -847,6 +848,8 @@ def qmmmpol_for_scf(scf_method, ommp_obj):
 
             if self.ommp_obj.is_amoeba:
                 ommp.time_push()
+                memblksize = int((0.8*self.fakeget_mem) / (9*nao*nao))
+                blksize = min(memblksize, 2500//9)
                 for i0, i1 in lib.prange(0, self.ommp_obj.mm_atoms, blksize):
                     _fm = gto.fakemol_for_charges(self.ommp_obj.cmm[i0:i1])
 
@@ -1064,6 +1067,7 @@ def qmmmpol_grad_for_scf(scf_grad):
 
         @property
         def fakeget_mem(self):
+            """Return the number of float64 which can be safely allocated in  memory."""
             return (self.max_memory - lib.current_memory()[0]) * 1e6 / 8 # In number of float64
 
         def set_qm_frozen_atoms(self, value):
@@ -1111,14 +1115,8 @@ def qmmmpol_grad_for_scf(scf_grad):
                 mol = self.mol
 
             nao = mol.nao
-            if self.base.ommp_obj.is_amoeba:
-                memblksize = int((self.fakeget_mem-6*nao**2) / (60*nao*nao))
-                maxblksize = int(self.base.max_memblk/(60*nao*nao))
-            else:
-                memblksize = int((self.fakeget_mem-6*nao**2) / (3*nao*nao))
-                maxblksize = int(self.base.max_memblk/(3*nao*nao))
-
-            blksize = min(memblksize, maxblksize)
+            memblksize = int((0.8*self.fakeget_mem) / (3*nao*nao))
+            blksize = min(memblksize, 2500//3)
 
             self.g_mm = numpy.zeros([3, nao*nao])
             if self.base.do_pol:
@@ -1144,19 +1142,29 @@ def qmmmpol_grad_for_scf(scf_grad):
                 _q = q[i0:i1].reshape(1,i1-i0)
                 ommp.time_pull('Integrals qs')
                 ommp.time_push()
+                ommp.time_push()
                 for j in range(3):
                     self.g_mm[j] += numpy.ravel(lib.numpy_helper.ddot(_q, _ints[j]))
+                ommp.time_pull("Integral qs - coreh")
 
                 if domm:
+                    ommp.time_push()
                     ef = numpy.zeros([3,i1-i0])
                     for j in range(3):
                         ef[j] = 2*numpy.ravel(lib.numpy_helper.ddot(_ints[j], _dm))
+                    ommp.time_pull("Integral qs - mm 1")
+                    ommp.time_push()
                     # Add nuclear component
                     ef += self.base.ef_nucl_at_static[i0:i1].T
+                    ommp.time_pull("Integral qs - mm 2")
+                    ommp.time_push()
                     # Save the electric field for later use (multipoles torque)
                     ef_at_MM[i0:i1,:] = ef.T
+                    ommp.time_pull("Integral qs - mm 3")
+                    ommp.time_push()
                     # Contract qith charges
                     self.qmmm_force_mm[i0:i1] -= numpy.einsum('ji,i->ij', ef, q[i0:i1])
+                    ommp.time_pull("Integral qs - mm 4")
                 ommp.time_pull('Contraction qs')
             ommp.time_pull('Charges')
 
@@ -1164,6 +1172,8 @@ def qmmmpol_grad_for_scf(scf_grad):
             if self.base.ommp_obj.is_amoeba or self.base.do_pol:
                 # fixed dipoles
                 ommp.time_push()
+                memblksize = int((0.8*self.fakeget_mem) / (9*nao*nao))
+                blksize = min(memblksize, 2500//9)
                 # Create a map to put all polarizable atoms at the beginning
                 # that is contiguously to compute simultaneously the components
                 # of g_mm due to static dipoles and of g_pol due to induce dipoles.
@@ -1286,6 +1296,8 @@ def qmmmpol_grad_for_scf(scf_grad):
 
                 # fixed quadrupoles
                 ommp.time_push()
+                memblksize = int((0.8*self.fakeget_mem) / (27*nao*nao))
+                blksize = min(memblksize, 2500//27)
                 quad = self.base.ommp_obj.static_quadrupoles
                 for i0, i1 in lib.prange(0, q.size, blksize):
                     ommp.time_push()
